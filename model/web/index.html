@@ -216,7 +216,11 @@
     busy(true);
     fetch("/ask", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        // Opts out of ngrok's free-tier interstitial when served through a tunnel.
+        "ngrok-skip-browser-warning": "true"
+      },
       body: JSON.stringify(body)
     }).then(function (r) {
       return r.json().then(function (j) {

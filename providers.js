@@ -116,6 +116,10 @@ async function openAiCompatibleAdapter(messages, opts) {
   if (opts.apiKey) {
     headers['Authorization'] = 'Bearer ' + opts.apiKey;
   }
+  // ngrok's free tier answers browser-ish requests with an interstitial warning
+  // page instead of proxying them. This header opts out of it. Harmless
+  // everywhere else, so it is not conditional on the provider.
+  headers['ngrok-skip-browser-warning'] = 'true';
 
   const body = {
     model: opts.model,

@@ -106,9 +106,18 @@ def main():
     if not adapter.exists():
         sys.exit(f"No adapter at {adapter}. Run model/train.py first.")
 
-    if OUT.exists():
-        shutil.rmtree(OUT)
-    OUT.mkdir(parents=True)
+    # Clear previous content but keep .git: once the Space has been pushed,
+    # this folder is a live repository and deleting it would take the Space's
+    # history with it. Re-running should update the files in place so the next
+    # commit is an ordinary edit.
+    OUT.mkdir(parents=True, exist_ok=True)
+    for item in OUT.iterdir():
+        if item.name == ".git":
+            continue
+        if item.is_dir():
+            shutil.rmtree(item, ignore_errors=True)
+        else:
+            item.unlink(missing_ok=True)
 
     # The server and everything it imports at runtime.
     for name in ("serve.py", "guardrail_py.py", "compact_prompt.txt"):

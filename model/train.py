@@ -134,6 +134,17 @@ def make_trainer_class():
     from transformers import Trainer
 
     class TailLossTrainer(Trainer):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            # Trainer only divides the accumulated loss by gradient_accumulation_steps
+            # when the model does not accept loss kwargs (trainer.py:1961). Qwen does
+            # accept them, so with a custom compute_loss that returns a plain mean,
+            # Trainer assumes we already normalised and skips the division: every
+            # logged loss and grad_norm comes out exactly gradient_accumulation_steps
+            # times too large. The transformers docs say to set this to False when
+            # overriding compute_loss, so we do.
+            self.model_accepts_loss_kwargs = False
+
         def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
             labels = inputs["labels"]
             input_ids = inputs["input_ids"]

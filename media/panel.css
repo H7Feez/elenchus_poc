@@ -21,7 +21,7 @@ header {
   align-items: baseline;
   justify-content: space-between;
   gap: var(--gap);
-  margin-bottom: var(--gap);
+  margin-bottom: 10px;
   border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
   padding-bottom: 8px;
 }
@@ -53,8 +53,9 @@ label {
 textarea {
   width: 100%;
   box-sizing: border-box;
-  resize: vertical;
-  padding: 8px;
+  resize: none; /* the height is driven by content instead */
+  overflow-y: hidden;
+  padding: 7px 8px;
   color: var(--vscode-input-foreground);
   background: var(--vscode-input-background);
   border: 1px solid var(--vscode-input-border, transparent);
@@ -83,7 +84,7 @@ button.primary {
   background: var(--vscode-button-background);
 }
 
-button.primary:hover {
+button.primary:hover:not(:disabled) {
   background: var(--vscode-button-hoverBackground);
 }
 
@@ -93,13 +94,133 @@ button.ghost {
   border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
 }
 
+button.link {
+  background: none;
+  color: var(--vscode-textLink-foreground);
+  padding: 0;
+  font-size: 0.85em;
+}
+
 button:disabled {
   opacity: 0.5;
   cursor: default;
 }
 
+button:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+}
+
 #start {
   margin-top: var(--gap);
+}
+
+/* --- mode selector ---------------------------------------------------- */
+
+.modes {
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.mode {
+  flex: 1;
+  border-radius: 0;
+  padding: 6px 8px;
+  font-size: 0.87em;
+  background: transparent;
+  color: var(--vscode-foreground);
+  opacity: 0.72;
+  border-right: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+}
+
+.mode:last-child { border-right: none; }
+
+.mode:hover { opacity: 1; }
+
+.mode.active {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  opacity: 1;
+  font-weight: 600;
+}
+
+.mode-note {
+  margin: 6px 0 0;
+  font-size: 0.83em;
+  opacity: 0.7;
+  min-height: 1.2em;
+}
+
+/* --- submitted code, with line numbers -------------------------------- */
+
+.codeview {
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  border-radius: 4px;
+  margin-bottom: var(--gap);
+  overflow: hidden;
+}
+
+.codeview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: var(--vscode-input-background);
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+}
+
+.codeview-title {
+  font-size: 0.8em;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.7;
+}
+
+.codeview-body {
+  max-height: 260px;
+  overflow: auto;
+}
+
+.codelines {
+  counter-reset: codeline;
+  list-style: none;
+  margin: 0;
+  padding: 6px 0;
+  font-family: var(--vscode-editor-font-family);
+  font-size: var(--vscode-editor-font-size);
+  line-height: 1.5;
+}
+
+.codelines li {
+  counter-increment: codeline;
+  display: flex;
+  gap: 12px;
+  padding: 0 10px 0 0;
+  white-space: pre;
+}
+
+.codelines li::before {
+  content: counter(codeline);
+  flex: 0 0 3ch;
+  text-align: right;
+  padding-left: 10px;
+  opacity: 0.45;
+  user-select: none;
+}
+
+/* The highlight the strong-hint and direct modes drive. Uses the editor's own
+   find-match colour so it reads as "the editor pointing", not decoration. */
+.codelines li.marked {
+  background: var(--vscode-editor-findMatchHighlightBackground, rgba(234, 92, 0, 0.22));
+  box-shadow: inset 2px 0 0 var(--vscode-editorWarning-foreground, #cca700);
+}
+
+.codelines li.marked::before {
+  opacity: 0.9;
+  font-weight: 700;
 }
 
 /* --- transcript ------------------------------------------------------- */
@@ -164,6 +285,43 @@ button:disabled {
   font-style: italic;
   margin-bottom: var(--gap);
 }
+
+/* --- the fix card ----------------------------------------------------- */
+
+.fixcard {
+  border: 1px solid var(--vscode-editorWarning-foreground, #cca700);
+  border-radius: 4px;
+  padding: 11px 12px;
+  margin-bottom: var(--gap);
+  background: var(--vscode-textBlockQuote-background, rgba(128, 128, 128, 0.1));
+}
+
+.fixcard-label {
+  display: block;
+  font-size: 0.78em;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.8;
+  margin-bottom: 8px;
+}
+
+.fixcard pre {
+  margin: 0 0 10px;
+  padding: 9px 10px;
+  background: var(--vscode-input-background);
+  border-radius: 3px;
+  overflow-x: auto;
+  font-family: var(--vscode-editor-font-family);
+  font-size: var(--vscode-editor-font-size);
+  line-height: 1.5;
+}
+
+.fixcard-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* --- composer --------------------------------------------------------- */
 
 .composer-row {
   display: flex;

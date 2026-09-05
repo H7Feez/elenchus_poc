@@ -49,6 +49,13 @@ function inspect(reply) {
   const reasons = [];
   const text = String(reply || '');
 
+  // Nothing left after the markers were stripped. Usually means the model
+  // answered with a bare code block and no words — a leak with the prose
+  // missing, not a harmless empty reply.
+  if (!text.trim()) {
+    return { blocked: true, reasons: ['empty reply once markers were removed'] };
+  }
+
   if (FENCE.test(text)) {
     reasons.push('contains a fenced code block');
   }

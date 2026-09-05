@@ -80,6 +80,21 @@
           "default": "",
           "description": "Model identifier sent to the provider, e.g. llama-3.3-70b-versatile."
         },
+        "socraticTutor.defaultMode": {
+          "type": "string",
+          "default": "hint",
+          "enum": [
+            "hint",
+            "strong",
+            "direct"
+          ],
+          "enumDescriptions": [
+            "A question and nothing else. The student finds the line themselves.",
+            "A question, plus the lines highlighted in the submitted code.",
+            "The bug named and a fix that can be applied to the editor. No Socratic method."
+          ],
+          "description": "Which mode a new session starts in. It can be changed at any time from the panel."
+        },
         "socraticTutor.temperature": {
           "type": "number",
           "default": 0.6,
@@ -88,7 +103,7 @@
         "socraticTutor.guardrailEnabled": {
           "type": "boolean",
           "default": true,
-          "description": "Block replies that contain a full solution and ask the model to rewrite them as a hint."
+          "description": "Block replies that contain a full solution and ask the model to rewrite them as a hint. Never applies in Direct answer mode, which exists to hand over the fix."
         }
       }
     }

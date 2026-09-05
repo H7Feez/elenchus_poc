@@ -10,6 +10,7 @@ const path = '../';
 const guardrail = require(path + 'guardrail.js');
 const providers = require(path + 'providers.js');
 const prompt = require(path + 'prompt.js');
+const parse = require(path + 'parse.js');
 
 let fails = 0;
 function check(name, cond) {
@@ -43,31 +44,142 @@ goodHints.forEach((h, i) => {
 check('hasQuestion true', guardrail.hasQuestion('What is x?'));
 check('hasQuestion false', !guardrail.hasQuestion('That is correct.'));
 
+// An empty reply usually means the model answered with a bare code block and
+// the markers were all that survived parsing. Treat it as a leak, not as fine.
+check('blocks an empty reply', guardrail.inspect('').blocked);
+check('blocks a whitespace-only reply', guardrail.inspect('   \n  ').blocked);
+
+// --- parse: the LINES marker ---
+check('parses a single line', (function () {
+  const r = parse.parseReply('Look at it.\n\nLINES: 3');
+  return r.range && r.range.start === 3 && r.range.end === 3 && r.prose === 'Look at it.';
+})());
+check('parses a range', (function () {
+  const r = parse.parseReply('Look at it.\n\nLINES: 2-4');
+  return r.range && r.range.start === 2 && r.range.end === 4;
+})());
+check('parses an en-dash range', (function () {
+  const r = parse.parseReply('x\n\nLINES: 2–4');
+  return r.range && r.range.end === 4;
+})());
+check('no marker means no range', parse.parseReply('Just a question?').range === null);
+check('rejects a backwards range', parse.parseReply('x\nLINES: 9-2').range === null);
+check('rejects line zero', parse.parseReply('x\nLINES: 0').range === null);
+check('marker is stripped from prose', parse.parseReply('Ask this.\n\nLINES: 3').prose.indexOf('LINES') === -1);
+
+// --- parse: the fix block ---
+const directReply =
+  'total is reset each pass.\n\nLINES: 2-4\nFIX:\n```python\n    total = 0\n    for n in nums:\n        total += n\n```';
+check('parses a fenced fix', (function () {
+  const r = parse.parseReply(directReply);
+  return r.fix === '    total = 0\n    for n in nums:\n        total += n';
+})());
+check('fix reply keeps its prose', parse.parseReply(directReply).prose === 'total is reset each pass.');
+check('fix reply keeps its range', (function () {
+  const r = parse.parseReply(directReply);
+  return r.range.start === 2 && r.range.end === 4;
+})());
+check('recovers a fix with no fence', (function () {
+  const r = parse.parseReply('why\nLINES: 1\nFIX:\nx = 1');
+  return r.fix === 'x = 1';
+})());
+check('no fix means null', parse.parseReply('Just a question?\nLINES: 2').fix === null);
+
+// --- parse: applying a range ---
+const sample = 'def average(nums):\n    for n in nums:\n        total = 0\n        total += n\n    return total / len(nums)';
+check('applyRange swaps the right lines', (function () {
+  const out = parse.applyRange(sample, { start: 2, end: 4 }, '    total = 0\n    for n in nums:\n        total += n');
+  return out === 'def average(nums):\n    total = 0\n    for n in nums:\n        total += n\n    return total / len(nums)';
+})());
+check('applyRange refuses an out-of-bounds range', parse.applyRange(sample, { start: 2, end: 99 }, 'x') === null);
+check('applyRange refuses a null range', parse.applyRange(sample, null, 'x') === null);
+check('sliceRange returns the original lines', parse.sliceRange(sample, { start: 3, end: 3 }) === '        total = 0');
+check('sliceRange refuses out of bounds', parse.sliceRange(sample, { start: 1, end: 99 }) === null);
+
+// The panel normalises to \n but files on disk here are CRLF. Both the parser
+// and the range helpers must be indifferent to which one they are handed.
+const crlfSample = sample.replace(/\n/g, '\r\n');
+check('sliceRange handles CRLF input', parse.sliceRange(crlfSample, { start: 3, end: 3 }) === '        total = 0');
+check('applyRange handles CRLF input', (function () {
+  const out = parse.applyRange(crlfSample, { start: 3, end: 3 }, '        total = 1');
+  return out !== null && out.indexOf('\r') === -1 && out.indexOf('total = 1') !== -1;
+})());
+check('parseReply handles CRLF input', (function () {
+  const r = parse.parseReply('Look here.\r\n\r\nLINES: 2-4\r\nFIX:\r\n```py\r\nx = 1\r\n```');
+  return r.range.start === 2 && r.fix === 'x = 1' && r.prose === 'Look here.';
+})());
+
+// --- prompt: modes ---
+check('three modes exist', Object.keys(prompt.MODES).length === 3);
+check('default mode is a real mode', prompt.isMode(prompt.DEFAULT_MODE));
+check('unknown mode falls back', prompt.modeOrDefault('nonsense') === prompt.DEFAULT_MODE);
+check('hint mode uses the guardrail', prompt.guardrailApplies('hint'));
+check('strong mode uses the guardrail', prompt.guardrailApplies('strong'));
+check('direct mode does NOT use the guardrail', !prompt.guardrailApplies('direct'));
+check('each mode builds a distinct prompt', (function () {
+  const a = prompt.buildSystemPrompt('hint');
+  const b = prompt.buildSystemPrompt('strong');
+  const c = prompt.buildSystemPrompt('direct');
+  return a !== b && b !== c && a !== c && a.length > 200;
+})());
+check('hint mode does NOT highlight', !prompt.highlightApplies('hint'));
+check('strong mode highlights', prompt.highlightApplies('strong'));
+check('direct mode highlights', prompt.highlightApplies('direct'));
+check('unknown mode inherits the default gate', prompt.highlightApplies('nonsense') === prompt.highlightApplies(prompt.DEFAULT_MODE));
+check('hint prompt forbids the marker', /Do not use the LINES marker/.test(prompt.buildSystemPrompt('hint')));
+check('strong prompt asks for the marker', /LINES: 3/.test(prompt.buildSystemPrompt('strong')));
+check('direct prompt asks for a fix block', /FIX:/.test(prompt.buildSystemPrompt('direct')));
+
+// --- prompt: line numbering ---
+check('numbers lines from 1', prompt.numberLines('a\nb\nc').split('\n')[0] === '1 | a');
+check('pads numbers to equal width', (function () {
+  const out = prompt.numberLines(new Array(12).join('x\n') + 'x').split('\n');
+  return out[0] === ' 1 | x' && out[9] === '10 | x';
+})());
+check('first turn includes numbered code', prompt.buildFirstTurn('x = 1\n', 'IndexError: nope').indexOf('1 | x = 1') !== -1);
+check('first turn includes error', prompt.buildFirstTurn('x = 1', 'IndexError').indexOf('IndexError') !== -1);
+check('first turn handles no error', prompt.buildFirstTurn('x = 1', '').indexOf('without an error') !== -1);
+
 // --- mock provider ---
 (async () => {
-  const opts = { provider: 'mock' };
-  const m0 = await providers.getReply([{ role: 'user', content: 'help' }], opts);
-  check('mock returns first rung', m0.includes('largest index'));
+  const m0 = await providers.getReply([{ role: 'user', content: 'help' }], { provider: 'mock', mode: 'hint' });
+  check('mock hint returns first rung', m0.indexOf('line 3') !== -1);
 
   const m1 = await providers.getReply(
     [{ role: 'user', content: 'help' }, { role: 'assistant', content: m0 }, { role: 'user', content: 'idk' }],
-    opts
+    { provider: 'mock', mode: 'hint' }
   );
   check('mock escalates on turn 2', m1 !== m0);
 
-  const leaked = await providers.getReply([{ role: 'user', content: '/leak' }], opts);
-  check('mock /leak produces a leak', guardrail.inspect(leaked).blocked);
+  const strong = await providers.getReply([{ role: 'user', content: 'help' }], { provider: 'mock', mode: 'strong' });
+  check('mock strong carries a LINES marker', parse.parseReply(strong).range !== null);
 
-  // every mock rung must survive its own filter, or the demo self-blocks
-  for (let i = 0; i < 5; i++) {
-    const msgs = [{ role: 'user', content: 'help' }];
-    for (let j = 0; j < i; j++) msgs.push({ role: 'assistant', content: 'x' }, { role: 'user', content: 'y' });
-    const r = await providers.getReply(msgs, opts);
-    const g = guardrail.inspect(r);
-    check('mock rung ' + i + ' passes guardrail' + (g.blocked ? ' -> ' + g.reasons.join('; ') : ''), !g.blocked);
+  const direct = await providers.getReply([{ role: 'user', content: 'help' }], { provider: 'mock', mode: 'direct' });
+  const parsedDirect = parse.parseReply(direct);
+  check('mock direct carries a fix', parsedDirect.fix !== null);
+  check('mock direct carries a range', parsedDirect.range !== null);
+  check('mock direct fix actually repairs the sample', (function () {
+    const fixed = parse.applyRange(sample, parsedDirect.range, parsedDirect.fix);
+    return fixed !== null && /^\s+total = 0\n\s+for n in nums:/m.test(fixed);
+  })());
+
+  const leaked = await providers.getReply([{ role: 'user', content: '/leak' }], { provider: 'mock', mode: 'hint' });
+  check('mock /leak produces a leak', guardrail.inspect(parse.parseReply(leaked).prose).blocked);
+
+  // Every hint and strong rung must survive its own filter, or the demo
+  // self-blocks. The filter sees prose only, so that is what we inspect.
+  for (const mode of ['hint', 'strong']) {
+    for (let i = 0; i < 5; i++) {
+      const msgs = [{ role: 'user', content: 'help' }];
+      for (let j = 0; j < i; j++) msgs.push({ role: 'assistant', content: 'x' }, { role: 'user', content: 'y' });
+      const r = await providers.getReply(msgs, { provider: 'mock', mode });
+      const g = guardrail.inspect(parse.parseReply(r).prose);
+      check('mock ' + mode + ' rung ' + i + ' passes guardrail' + (g.blocked ? ' -> ' + g.reasons.join('; ') : ''), !g.blocked);
+    }
   }
 
   check('unknown provider throws', await providers.getReply([], { provider: 'nope' }).then(() => false, () => true));
+
   // Configuration mistakes must fail loudly and say which setting is wrong,
   // before any network call is attempted.
   check('openaiCompatible demands a baseUrl', await providers
@@ -84,13 +196,6 @@ check('hasQuestion false', !guardrail.hasQuestion('That is correct.'));
       apiKey: 'k'
     })
     .then(() => false, (e) => /Could not reach/.test(e.message)));
-
-  // --- prompt ---
-  const t = prompt.buildFirstTurn('x = 1\n', 'IndexError: list index out of range');
-  check('first turn includes code', t.includes('x = 1'));
-  check('first turn includes error', t.includes('IndexError'));
-  check('first turn handles no error', prompt.buildFirstTurn('x = 1', '').includes('without an error'));
-  check('system prompt non-empty', prompt.SYSTEM_PROMPT.length > 200);
 
   console.log(fails === 0 ? '\nALL PASS' : '\n' + fails + ' FAILURE(S)');
   process.exit(fails === 0 ? 0 : 1);

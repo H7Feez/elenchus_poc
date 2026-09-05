@@ -14,25 +14,47 @@
     <span id="model" class="model">—</span>
   </header>
 
+  <div id="modes" class="modes" role="radiogroup" aria-label="How much help to give"></div>
+  <p id="modeNote" class="mode-note"></p>
+
   <section id="setup">
     <label for="code">Your code</label>
-    <textarea id="code" rows="14" spellcheck="false"
+    <textarea id="code" rows="2" spellcheck="false" data-autogrow data-max="420"
               placeholder="Paste the code you are stuck on."></textarea>
 
     <label for="error">Error or stack trace <span class="hint">optional</span></label>
-    <textarea id="error" rows="4" spellcheck="false"
+    <textarea id="error" rows="2" spellcheck="false" data-autogrow data-max="200"
               placeholder="Paste the error. Leave empty if it runs but does the wrong thing."></textarea>
 
-    <button id="start" class="primary">Ask for a hint</button>
+    <button id="start" class="primary">Ask for help</button>
   </section>
 
   <section id="conversation" hidden>
+    <div id="codeView" class="codeview">
+      <div class="codeview-head">
+        <span class="codeview-title">Your code</span>
+        <button id="toggleCode" class="link" aria-expanded="true">Hide</button>
+      </div>
+      <div id="codeBody" class="codeview-body">
+        <ol id="codeLines" class="codelines"></ol>
+      </div>
+    </div>
+
     <div id="transcript" role="log" aria-live="polite"></div>
 
     <div id="busy" class="busy" hidden>thinking…</div>
 
+    <div id="fixCard" class="fixcard" hidden>
+      <span class="fixcard-label">Suggested fix — replaces <span id="fixRange">lines</span></span>
+      <pre id="fixCode"></pre>
+      <div class="fixcard-actions">
+        <button id="applyFix" class="primary">Apply to editor</button>
+        <button id="copyFix" class="ghost">Copy</button>
+      </div>
+    </div>
+
     <div class="composer">
-      <textarea id="reply" rows="3" spellcheck="false"
+      <textarea id="reply" rows="2" spellcheck="false" data-autogrow data-max="220"
                 placeholder="Answer the tutor's question. Enter to send, Shift+Enter for a new line."></textarea>
       <div class="composer-row">
         <button id="send" class="primary">Send</button>

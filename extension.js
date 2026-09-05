@@ -5,8 +5,9 @@ const fs = require('fs');
 const path = require('path');
 
 const { getReply, NEEDS_KEY } = require('./providers');
-const { SYSTEM_PROMPT, REWRITE_INSTRUCTION, BLOCKED_MESSAGE, buildFirstTurn } = require('./prompt');
+const promptLib = require('./prompt');
 const guardrail = require('./guardrail');
+const { parseReply, applyRange, sliceRange } = require('./parse');
 
 const SECRET_KEY = 'socraticTutor.apiKey';
 
@@ -19,12 +20,17 @@ let session = newSession();
 function newSession() {
   return {
     started: false,          // has the student submitted code yet
+    mode: promptLib.DEFAULT_MODE,
+    code: '',                // the submitted code, kept so fixes can be applied to it
     messages: [],            // OpenAI-shape turns, excluding the system prompt
+    lastFix: null,           // { range, replacement } from the most recent direct answer
     stats: {
       asks: 0,
+      byMode: { hint: 0, strong: 0, direct: 0 },
       guardrailFired: 0,     // a reply was caught and a rewrite requested
       guardrailBlocked: 0,   // the rewrite was ALSO bad, student saw nothing
       repliesWithoutQuestion: 0,
+      fixesApplied: 0,
       reasons: []            // every reason string the filter produced
     }
   };
@@ -73,8 +79,6 @@ function openPanel(context) {
     null,
     context.subscriptions
   );
-
-  postModelLabel();
 }
 
 function renderHtml(context, webview) {
@@ -105,6 +109,19 @@ function postModelLabel() {
   });
 }
 
+/** Sends the mode list and the current selection, so the panel never hardcodes them. */
+function postModes() {
+  post({
+    type: 'modes',
+    modes: Object.keys(promptLib.MODES).map((id) => ({
+      id,
+      label: promptLib.MODES[id].label,
+      note: promptLib.MODES[id].note
+    })),
+    active: session.mode
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Message handling
 // ---------------------------------------------------------------------------
@@ -112,10 +129,21 @@ function postModelLabel() {
 async function handleMessage(context, msg) {
   switch (msg.type) {
     case 'ready':
+      session.mode = promptLib.modeOrDefault(
+        vscode.workspace.getConfiguration('socraticTutor').get('defaultMode')
+      );
+      postModes();
       postModelLabel();
+      break;
+    case 'setMode':
+      session.mode = promptLib.modeOrDefault(msg.mode);
+      postModes();
       break;
     case 'ask':
       await ask(context, msg);
+      break;
+    case 'applyFix':
+      await applyFixToEditor();
       break;
     case 'newSession':
       resetSession();
@@ -137,10 +165,11 @@ async function ask(context, msg) {
       post({ type: 'notice', text: 'Paste some code first.' });
       return;
     }
-    userText = buildFirstTurn(msg.code, msg.error);
+    session.code = msg.code.replace(/\r\n?/g, '\n').replace(/\s+$/, '');
+    userText = promptLib.buildFirstTurn(session.code, msg.error);
     session.started = true;
-    post({ type: 'sessionStarted' });
-    post({ type: 'append', role: 'student', text: summariseFirstTurn(msg.code, msg.error) });
+    post({ type: 'sessionStarted', code: session.code });
+    post({ type: 'append', role: 'student', text: summariseFirstTurn(session.code, msg.error) });
   } else {
     if (!msg.message || !msg.message.trim()) return;
     userText = msg.message.trim();
@@ -149,6 +178,7 @@ async function ask(context, msg) {
 
   session.messages.push({ role: 'user', content: userText });
   session.stats.asks += 1;
+  session.stats.byMode[session.mode] += 1;
 
   const apiKey = await context.secrets.get(SECRET_KEY);
   if (NEEDS_KEY.has(provider) && !apiKey) {
@@ -161,14 +191,27 @@ async function ask(context, msg) {
     baseUrl: cfg.get('baseUrl'),
     model: cfg.get('model'),
     temperature: cfg.get('temperature'),
+    mode: session.mode,
     apiKey
   };
 
   post({ type: 'busy', value: true });
   try {
     const reply = await askWithGuardrail(opts);
-    session.messages.push({ role: 'assistant', content: reply.text });
-    post({ type: 'append', role: 'tutor', text: reply.text, flag: reply.flag });
+    session.messages.push({ role: 'assistant', content: reply.raw });
+
+    // A fix only makes sense against code we can still address by line number.
+    session.lastFix =
+      reply.fix && reply.range ? { range: reply.range, replacement: reply.fix } : null;
+
+    post({
+      type: 'append',
+      role: 'tutor',
+      text: reply.text,
+      flag: reply.flag,
+      range: reply.range,
+      fix: session.lastFix ? { range: reply.range, code: reply.fix } : null
+    });
   } catch (err) {
     post({ type: 'notice', text: String(err && err.message ? err.message : err) });
   } finally {
@@ -177,47 +220,85 @@ async function ask(context, msg) {
 }
 
 /**
- * One model call, inspected. If the filter trips, one automatic rewrite
- * attempt. If the rewrite also trips, the student sees the blocked message
- * instead - never the leaked solution.
+ * One model call, parsed and inspected.
+ *
+ * The guardrail sees only the prose. The LINES marker and the fix block are
+ * structure, not the tutor talking, and running the filter over them would
+ * make strong-hint and direct modes block themselves every single time.
  */
 async function askWithGuardrail(opts) {
   const cfg = vscode.workspace.getConfiguration('socraticTutor');
-  const enabled = cfg.get('guardrailEnabled');
+  const enabled = cfg.get('guardrailEnabled') && promptLib.guardrailApplies(session.mode);
 
-  const base = [{ role: 'system', content: SYSTEM_PROMPT }].concat(session.messages);
+  const base = [{ role: 'system', content: promptLib.buildSystemPrompt(session.mode) }]
+    .concat(session.messages);
+
   const first = await getReply(base, opts);
+  const parsedFirst = parseReply(first);
 
-  if (!enabled) return { text: first, flag: null };
+  // Hint mode never highlights, whatever the model chose to emit.
+  const mayHighlight = promptLib.highlightApplies(session.mode);
 
-  const check = guardrail.inspect(first);
+  if (!enabled) {
+    return {
+      raw: first,
+      text: parsedFirst.prose || first,
+      range: mayHighlight ? parsedFirst.range : null,
+      fix: parsedFirst.fix,
+      flag: null
+    };
+  }
+
+  const check = guardrail.inspect(parsedFirst.prose);
   if (!check.blocked) {
-    if (!guardrail.hasQuestion(first)) session.stats.repliesWithoutQuestion += 1;
-    return { text: first, flag: null };
+    if (!guardrail.hasQuestion(parsedFirst.prose)) session.stats.repliesWithoutQuestion += 1;
+    return {
+      raw: first,
+      text: parsedFirst.prose,
+      range: mayHighlight ? parsedFirst.range : null,
+      fix: null, // a fix in a hint mode is exactly what we are here to prevent
+      flag: null
+    };
   }
 
   session.stats.guardrailFired += 1;
-  session.stats.reasons.push.apply(session.stats.reasons, check.reasons);
-  log('guardrail fired: ' + check.reasons.join('; '));
+  session.stats.reasons.push.apply(
+    session.stats.reasons,
+    check.reasons.map((r) => session.mode + ': ' + r)
+  );
+  log('guardrail fired (' + session.mode + '): ' + check.reasons.join('; '));
 
   const retryMessages = base.concat([
     { role: 'assistant', content: first },
-    { role: 'user', content: REWRITE_INSTRUCTION }
+    { role: 'user', content: promptLib.REWRITE_INSTRUCTION }
   ]);
   const second = await getReply(retryMessages, opts);
+  const parsedSecond = parseReply(second);
 
-  const recheck = guardrail.inspect(second);
+  const recheck = guardrail.inspect(parsedSecond.prose);
   if (!recheck.blocked) {
-    return { text: second, flag: 'rewritten' };
+    return {
+      raw: second,
+      text: parsedSecond.prose,
+      range: mayHighlight ? parsedSecond.range : null,
+      fix: null,
+      flag: 'rewritten'
+    };
   }
 
   session.stats.guardrailBlocked += 1;
   session.stats.reasons.push.apply(
     session.stats.reasons,
-    recheck.reasons.map((r) => 'on rewrite: ' + r)
+    recheck.reasons.map((r) => session.mode + ' on rewrite: ' + r)
   );
-  log('guardrail blocked after rewrite: ' + recheck.reasons.join('; '));
-  return { text: BLOCKED_MESSAGE, flag: 'blocked' };
+  log('guardrail blocked after rewrite (' + session.mode + '): ' + recheck.reasons.join('; '));
+  return {
+    raw: promptLib.BLOCKED_MESSAGE,
+    text: promptLib.BLOCKED_MESSAGE,
+    range: null,
+    fix: null,
+    flag: 'blocked'
+  };
 }
 
 function summariseFirstTurn(code, errorText) {
@@ -228,6 +309,107 @@ function summariseFirstTurn(code, errorText) {
     bits.push(errorText.trim().split('\n')[0]);
   }
   return bits.join(' — ');
+}
+
+// ---------------------------------------------------------------------------
+// Applying a fix
+// ---------------------------------------------------------------------------
+
+/**
+ * Writes the suggested fix into the open editor.
+ *
+ * Deliberately conservative: it only edits when the original lines are found
+ * verbatim, exactly once, in the active document. Anything less certain and it
+ * refuses and explains, because silently rewriting the wrong part of a
+ * student's file is far worse than making them paste it themselves.
+ */
+async function applyFixToEditor() {
+  const fix = session.lastFix;
+  if (!fix) {
+    post({ type: 'notice', text: 'There is no fix to apply.' });
+    return;
+  }
+
+  const original = sliceRange(session.code, fix.range);
+  if (original === null) {
+    post({
+      type: 'notice',
+      text: 'The suggested lines are outside the code you submitted, so the fix was not applied. Copy it instead.'
+    });
+    return;
+  }
+
+  // The panel normalises everything to \n, but the file on disk is very likely
+  // CRLF on Windows. Searching for the \n form alone finds nothing, so try the
+  // document's own line endings too.
+  let editor = null;
+  let needle = null;
+  for (const candidate of vscode.window.visibleTextEditors) {
+    const crlf = candidate.document.eol === vscode.EndOfLine.CRLF;
+    const forms = crlf ? [original.replace(/\n/g, '\r\n'), original] : [original];
+    const found = forms.find((f) => candidate.document.getText().indexOf(f) !== -1);
+    if (found) {
+      editor = candidate;
+      needle = found;
+      break;
+    }
+  }
+
+  if (!editor) {
+    post({
+      type: 'notice',
+      text: 'Could not find those lines in any open editor. Open the file you pasted from, or use Copy.'
+    });
+    return;
+  }
+
+  const text = editor.document.getText();
+  const at = text.indexOf(needle);
+  if (at !== text.lastIndexOf(needle)) {
+    post({
+      type: 'notice',
+      text: 'Those lines appear more than once in the file, so it is not clear which to change. Use Copy and edit by hand.'
+    });
+    return;
+  }
+
+  // Write back in the document's own line endings, so the edit does not leave
+  // a block of mismatched newlines in the middle of the file.
+  const replacement =
+    editor.document.eol === vscode.EndOfLine.CRLF
+      ? fix.replacement.replace(/\r\n?/g, '\n').replace(/\n/g, '\r\n')
+      : fix.replacement;
+
+  const start = editor.document.positionAt(at);
+  const end = editor.document.positionAt(at + needle.length);
+  const target = new vscode.Range(start, end);
+
+  const edit = new vscode.WorkspaceEdit();
+  edit.replace(editor.document.uri, target, replacement);
+  const ok = await vscode.workspace.applyEdit(edit);
+
+  if (!ok) {
+    post({ type: 'notice', text: 'VS Code refused the edit. The file may be read-only.' });
+    return;
+  }
+
+  // Keep the panel's copy in step, so a second fix still counts lines correctly.
+  const updated = applyRange(session.code, fix.range, fix.replacement);
+  if (updated !== null) {
+    session.code = updated;
+    post({ type: 'codeUpdated', code: updated });
+  }
+
+  session.stats.fixesApplied += 1;
+  session.lastFix = null;
+  post({ type: 'fixApplied' });
+
+  const newEnd = editor.document.positionAt(
+    editor.document.offsetAt(start) + replacement.length
+  );
+  editor.revealRange(new vscode.Range(start, newEnd), vscode.TextEditorRevealType.InCenter);
+  editor.selection = new vscode.Selection(start, newEnd);
+  vscode.window.showInformationMessage('Socratic Tutor: fix applied. Undo with Ctrl+Z.');
 }
 
 // ---------------------------------------------------------------------------
@@ -263,6 +445,7 @@ async function testConnection(context) {
     baseUrl: cfg.get('baseUrl'),
     model: cfg.get('model'),
     temperature: cfg.get('temperature'),
+    mode: session.mode,
     apiKey: await context.secrets.get(SECRET_KEY)
   };
 
@@ -297,8 +480,11 @@ async function testConnection(context) {
 }
 
 function resetSession() {
+  const keepMode = session.mode;
   session = newSession();
+  session.mode = keepMode;
   post({ type: 'reset' });
+  postModes();
   postModelLabel();
 }
 
@@ -306,9 +492,13 @@ function showStats() {
   const s = session.stats;
   const lines = [
     'Student turns:            ' + s.asks,
+    '  in hint mode:           ' + s.byMode.hint,
+    '  in strong hint mode:    ' + s.byMode.strong,
+    '  in direct answer mode:  ' + s.byMode.direct,
     'Guardrail fired:          ' + s.guardrailFired,
     'Blocked after rewrite:    ' + s.guardrailBlocked,
     'Replies with no question: ' + s.repliesWithoutQuestion,
+    'Fixes applied to editor:  ' + s.fixesApplied,
     '',
     'Reasons:'
   ].concat(s.reasons.length ? s.reasons.map((r) => '  - ' + r) : ['  (none)']);

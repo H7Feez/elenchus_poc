@@ -14,7 +14,7 @@
 
 /**
  * @param {Array<{role: string, content: string}>} messages
- * @param {{provider: string, baseUrl: string, model: string, temperature: number, apiKey: string|undefined}} opts
+ * @param {{provider: string, baseUrl: string, model: string, temperature: number, apiKey: string|undefined, mode: string|undefined}} opts
  * @returns {Promise<string>} the assistant's reply text
  */
 async function getReply(messages, opts) {
@@ -27,34 +27,54 @@ async function getReply(messages, opts) {
 }
 
 // ---------------------------------------------------------------------------
-// mock — the only adapter implemented right now
+// mock — offline, canned, free
 // ---------------------------------------------------------------------------
 
 /**
- * Canned replies that escalate the way the system prompt tells a real model to.
- * No network, no key, no cost. This is what lets the team iterate on the UI,
- * the transcript flow and the guardrail before deciding on a model.
+ * Canned replies that escalate the way the system prompts tell a real model to.
+ * No network, no key, no cost. This is what lets the team iterate on the panel,
+ * the prompts and the guardrail without spending a call.
+ *
+ * The content is written for samples/wrong_average.py — against any other
+ * snippet it will be confidently irrelevant, which is the honest cost of a
+ * canned backend. Connect a model for replies that respond to real code.
  *
  * Type "/leak" as a student reply to force a guardrail-tripping response — the
  * fastest way to demo the Direct Output Filter to someone.
  */
-const MOCK_LADDER = [
-  "Look at the line where the loop ends. What is the largest index your loop will actually reach?",
-  "Print that index just before the line that fails. What number do you expect, and what do you get?",
-  "So the index and the length of the list are not the same thing. Which one does the last valid position use?",
-  "This is the shape of an off-by-one error. Where in your loop does the count start from?"
-];
+const MOCK_LADDER = {
+  hint: [
+    'Look at line 3. How many times does that line run while the loop is going?',
+    'Print total at the start and end of each pass. What do you expect to see, and what do you actually see?',
+    'So total is not carrying anything between passes. What would have to be true for it to accumulate?',
+    'This is the shape of a variable being reset inside the thing that should be building it up. Where does yours start?'
+  ],
+  strong: [
+    'Line 3 runs on every pass of the loop, not once before it. Is that what you intended?\n\nLINES: 3',
+    'On the second pass, what is the value of total immediately after line 3 executes?\n\nLINES: 3',
+    'So each pass throws away what the last one added. Which line needs to run only once?\n\nLINES: 2-4',
+    'This is a variable being reset inside the loop that should be accumulating it. Where should it start instead?\n\nLINES: 2-4'
+  ],
+  direct: [
+    'total is set back to 0 on every pass of the loop, so it only ever holds the last value added. ' +
+      'The initialisation belongs above the loop, where it runs once.\n\n' +
+      'LINES: 2-4\nFIX:\n```python\n    total = 0\n    for n in nums:\n        total += n\n```'
+  ]
+};
 
-const MOCK_LEAK = `The bug is on line 14 — your range goes one step too far.
+const MOCK_LEAK = `The bug is on line 3 — total is reset every pass.
 
 \`\`\`python
-for i in range(len(items) - 1):
-    print(items[i])
+def average(nums):
+    total = 0
+    for n in nums:
+        total += n
+    return total / len(nums)
 \`\`\`
 
-Replace your loop with that and it will work.`;
+Replace your function with that and it will work.`;
 
-async function mockAdapter(messages, _opts) {
+async function mockAdapter(messages, opts) {
   await new Promise((r) => setTimeout(r, 400)); // fake latency, keeps the UI honest
 
   const lastUser = [...messages].reverse().find((m) => m.role === 'user');
@@ -62,8 +82,9 @@ async function mockAdapter(messages, _opts) {
     return MOCK_LEAK;
   }
 
+  const ladder = MOCK_LADDER[opts.mode] || MOCK_LADDER.hint;
   const turnsSoFar = messages.filter((m) => m.role === 'assistant').length;
-  return MOCK_LADDER[Math.min(turnsSoFar, MOCK_LADDER.length - 1)];
+  return ladder[Math.min(turnsSoFar, ladder.length - 1)];
 }
 
 // ---------------------------------------------------------------------------
@@ -100,7 +121,8 @@ async function openAiCompatibleAdapter(messages, opts) {
     model: opts.model,
     messages,
     temperature: typeof opts.temperature === 'number' ? opts.temperature : 0.6,
-    max_tokens: 300 // a hint is short; this is a cheap second brake on rambling
+    // Direct answers carry a code block, so they need more room than a hint.
+    max_tokens: opts.mode === 'direct' ? 700 : 300
   };
 
   const json = await postJson(baseUrl + '/chat/completions', headers, body);

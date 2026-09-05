@@ -85,15 +85,49 @@ is the closest equivalent, and for a five-person team it is enough.
 ## Using it
 
 Open the panel, paste code into the first box and the error into the second,
-press *Ask for a hint*, then answer the tutor's question in the reply box.
-`Enter` sends, `Shift+Enter` makes a new line.
+press the button, then answer the tutor's question in the reply box. `Enter`
+sends, `Shift+Enter` makes a new line. Both boxes start small and grow as you
+type, up to a ceiling, after which they scroll.
+
+### The three modes
+
+Pick one from the row at the top of the panel. It can be changed at any time,
+including part-way through a conversation — which is the realistic path: start
+on Hint, drop to Direct answer when genuinely stuck.
+
+| Mode | What comes back | Guardrail |
+|---|---|---|
+| **Hint** | A question, nothing else. You locate the line yourself. | On |
+| **Strong hint** | A question, plus the offending lines highlighted in your code. | On |
+| **Direct answer** | The bug named plainly, and a fix you can apply to the editor in one click. | Off |
+
+Direct answer is the mode that contradicts the project's own thesis, and it is
+here on purpose: it gives the evaluation a control condition. Running one bug
+through all three modes is the clearest way to show what the Socratic
+constraint actually costs and buys.
+
+The guardrail never runs in Direct answer mode — it would block the mode's
+entire reason for existing. It always runs in the other two, whatever
+`guardrailEnabled` says.
+
+### Applying a fix
+
+Direct answer replies carry a fix card. **Apply to editor** searches your open
+editors for the exact lines it means to replace and rewrites them in place;
+`Ctrl+Z` undoes it like any other edit. It refuses, and says why, when those
+lines are not open, or appear more than once in the file. **Copy** always
+works.
+
+### Testing it offline
 
 To see the guardrail fire, type `/leak` as a reply — the mock backend will
 deliberately hand over a full solution, and the filter will intercept it.
 
-Note that the mock backend is canned: it replies with the same four sentences
-in the same order regardless of what you paste. Replies start responding to
-your actual code once a model is connected.
+The mock backend is canned: it replies from a fixed script for each mode,
+regardless of what you paste. It is written for `samples/wrong_average.py`, so
+paste that one to see coherent replies. Against anything else it will be
+confidently irrelevant. Replies start responding to your real code once a model
+is connected.
 
 ### Commands
 
@@ -125,6 +159,7 @@ backend, and prompt assembly.
 | `prompt.js` | **The system prompt.** The actual product. Start here. |
 | `guardrail.js` | The filter's rules and thresholds |
 | `providers.js` | Backend adapters — where the model gets plugged in |
+| `parse.js` | Pulls the `LINES:` marker and the fix block out of a reply |
 | `extension.js` | Panel lifecycle, conversation state, stats |
 | `media/` | The panel's HTML, CSS and browser-side script |
 

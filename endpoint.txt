@@ -1,12 +1,14 @@
 # Where the team's model is running right now.
 #
 # The extension reads this file to find the tutor, so nobody has to configure
-# anything. When the tunnel restarts and hands out a new address, edit this
-# file on github.com and everyone picks it up within five minutes.
+# anything. When the tunnel restarts and hands out a new address, replace the
+# line below and everyone picks it up within five minutes, or instantly with
+# "Socratic Tutor: Refresh Endpoint".
+#
+# The Colab notebook can write this file itself: see model/colab_serve.ipynb
+# and the GITHUB_TOKEN secret.
 #
 # One URL, on its own line. The /v1 suffix is optional.
 # Lines starting with # are ignored.
-#
-# Not running at the moment.
 
 https://suggest-dual-assistance-fog.trycloudflare.com/v1

@@ -134,13 +134,14 @@ def main():
     (OUT / ".gitattributes").write_text(GITATTRIBUTES, encoding="utf-8")
     (OUT / ".gitignore").write_text(GITIGNORE, encoding="utf-8")
 
-    total = sum(f.stat().st_size for f in OUT.rglob("*") if f.is_file())
+    # .git holds the LFS copies of what was already pushed; not part of a push.
+    files = [f for f in OUT.rglob("*") if f.is_file() and ".git" not in f.relative_to(OUT).parts]
+    total = sum(f.stat().st_size for f in files)
     print(f"built {OUT}")
-    for f in sorted(OUT.rglob("*")):
-        if f.is_file():
-            rel = f.relative_to(OUT)
-            print(f"  {str(rel):40s} {f.stat().st_size / 1024:8.0f} KB")
-    print(f"\ntotal to push: {total / 1024 / 1024:.0f} MB")
+    for f in sorted(files):
+        rel = f.relative_to(OUT)
+        print(f"  {str(rel):40s} {f.stat().st_size / 1024:8.0f} KB")
+    print(f"\ncontent size: {total / 1024 / 1024:.0f} MB (only changed files are uploaded on a re-push)")
 
 
 if __name__ == "__main__":

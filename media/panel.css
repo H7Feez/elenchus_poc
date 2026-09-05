@@ -40,8 +40,58 @@ h1 {
 
 .toolbar {
   display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 8px;
-  margin: 10px 0 var(--gap);
+  flex-wrap: wrap;
+  margin: 10px 0 4px;
+}
+
+.toolbar-actions { display: flex; gap: 6px; }
+
+/* --- mode row: changes the mode for follow-up replies ----------------- */
+
+.modes {
+  display: flex;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.mode {
+  border-radius: 0;
+  padding: 5px 10px;
+  font-size: 0.85em;
+  background: transparent;
+  color: var(--vscode-foreground);
+  opacity: 0.7;
+  border-right: 1px solid var(--rule);
+}
+
+.mode:last-child { border-right: none; }
+.mode:hover { opacity: 1; }
+
+.mode.active {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  opacity: 1;
+  font-weight: 600;
+}
+
+.mode-note {
+  margin: 0 0 var(--gap);
+  font-size: 0.8em;
+  opacity: 0.65;
+  min-height: 1.2em;
+}
+
+kbd {
+  font-family: var(--vscode-editor-font-family);
+  font-size: 0.85em;
+  padding: 1px 5px;
+  border: 1px solid var(--rule);
+  border-bottom-width: 2px;
+  border-radius: 3px;
 }
 
 button {
@@ -120,11 +170,19 @@ main {
 .mode-badge.strong { color: var(--vscode-editorWarning-foreground, #cca700); }
 .mode-badge.direct { color: var(--vscode-editorError-foreground, #f14c4c); }
 
+/* The line label is a button: clicking it shows that code in the editor. */
 .where {
   font-size: 0.78em;
   opacity: 0.6;
   font-family: var(--vscode-editor-font-family);
+  background: none;
+  padding: 0;
+  color: var(--vscode-textLink-foreground);
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
 }
+
+.where:hover { opacity: 1; }
 
 /* Each part of an exchange sits in its own enclosure, so a long selection
    and a short reply stay visually separable. */

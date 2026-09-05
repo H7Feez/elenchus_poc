@@ -15,17 +15,19 @@
   </header>
 
   <div class="toolbar">
-    <button id="reHighlight" class="ghost" title="Put the highlight back in the editor">
-      Re-highlight
-    </button>
-    <button id="restart" class="ghost">Clear history</button>
+    <div id="modes" class="modes" role="radiogroup" aria-label="How much help for the next reply"></div>
+    <div class="toolbar-actions">
+      <button id="reHighlight" class="ghost" title="Put the highlight back in the editor">Re-highlight</button>
+      <button id="restart" class="ghost">Clear history</button>
+    </div>
   </div>
+  <p id="modeNote" class="mode-note"></p>
 
   <div id="empty" class="empty">
     <p>Select some code in the editor, right-click, and choose
-       <strong>Ask Socratic Tutor</strong>.</p>
-    <p class="empty-note">The popup takes an optional question and three buttons
-       for how much help you want.</p>
+       <strong>Ask Socratic Tutor</strong> — or press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>S</kbd>.</p>
+    <p class="empty-note">Type a question if you have one, then pick how much help you want.
+       The row above changes the mode for follow-up replies.</p>
   </div>
 
   <main id="history" role="log" aria-live="polite" aria-label="Conversation"></main>
@@ -34,7 +36,7 @@
 
   <div id="composer" class="composer" hidden>
     <textarea id="reply" rows="2" spellcheck="false" data-autogrow data-max="200"
-              placeholder="Answer the tutor's question. Enter to send, Shift+Enter for a new line."></textarea>
+              placeholder="Reply, ask a question, or say you're stuck. Enter to send, Shift+Enter for a new line."></textarea>
     <button id="send" class="primary">Send</button>
   </div>
 

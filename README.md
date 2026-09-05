@@ -46,8 +46,8 @@ Nobody needs Node.js locally for this: pushing a version tag makes GitHub
 Actions build the `.vsix` and attach it to the Release.
 
 ```powershell
-git tag v0.0.4
-git push origin v0.0.4
+git tag v0.0.5
+git push origin v0.0.5
 ```
 
 Download `socratic-tutor-poc.vsix` from the Release page, then either drag it
@@ -65,7 +65,7 @@ If you would rather not wait on CI, install Node.js once and build it yourself:
 
 ```powershell
 npx @vscode/vsce package
-code --install-extension socratic-tutor-poc-0.0.4.vsix
+code --install-extension socratic-tutor-poc-0.0.5.vsix
 ```
 
 ### About automatic updates
@@ -80,12 +80,14 @@ which loads the working copy directly and needs no install at all.
 
 ## Using it
 
-1. **Select the code** you are stuck on in the editor.
-2. **Right-click** and choose **Ask Socratic Tutor**.
-3. A popup appears. Type a question if you have one, or leave it empty.
-4. **Pick a mode** with one of the three buttons, or press `Enter` to reuse the
-   last mode you chose. The prompt line names it.
-5. The side panel opens with the reply.
+1. **Select the code** you are stuck on. Whole lines are used whatever you
+   drag, so the numbering the tutor sees matches the editor.
+2. **Right-click** and choose **Ask Socratic Tutor**, or press `Ctrl+Alt+S`.
+3. A popup appears with three rows. **Type a question** if you have one — or
+   leave it empty — then **pick a row** for how much help you want. `Enter`
+   picks the highlighted row, which is whichever mode you used last.
+4. The side panel opens with the reply. Reply in the box at the bottom to keep
+   talking.
 
 There is no error box. The prompt tells the model it has not been told whether
 the code runs, and warns it not to assume — an earlier version asserted the code
@@ -94,21 +96,40 @@ arguing with the premise instead of reading line 4.
 
 ### The three modes
 
-| Mode | Button | What comes back | Guardrail |
-|---|---|---|---|
-| **Hint** | lightbulb | A question, nothing else. You locate the line yourself. | On |
-| **Strong hint** | magnifier | A question, plus the lines highlighted in the editor. | On |
-| **Direct answer** | wrench | The bug named, and a fix you can apply in one click. | Off |
+| Mode | What comes back | Guardrail |
+|---|---|---|
+| **Hint** | A nudge and a question. You locate the line yourself. | On |
+| **Strong hint** | A question, plus the lines highlighted in the editor. | On |
+| **Direct answer** | The bug explained, and a fix you can apply in one click. | Off |
+
+The popup sets the mode for a new selection. The row at the top of the panel
+changes it for follow-ups, so "I'm stuck, give me a strong hint now" is one
+click rather than a re-selection. The mode you used last is remembered across
+restarts.
 
 Direct answer contradicts the project's own thesis on purpose: it gives the
 evaluation a control condition. Running one bug through all three modes is the
 clearest way to show what the Socratic constraint costs and buys.
 
+### Talking to it
+
+The tutor is meant to sound like a patient friend, not an examiner. After the
+first reply you can answer its question, ask what a concept means, say you are
+confused, guess, say thanks, or wander off-topic — it handles each of those
+differently. Asking *what a KeyError is* gets a plain explanation; asking
+*where my bug is* in Hint mode still gets a question back. Concepts are always
+fair game; only the location and fix of your specific bug is protected.
+
+The model sees the code plus the last eight turns. Older turns drop off, which
+keeps a long conversation inside a free tier's limits; the panel keeps the last
+ten exchanges for you to scroll.
+
 ### Highlighting in the editor
 
 Strong hint and Direct answer light up the offending lines in the editor itself.
 The highlight disappears the moment you click anywhere in that file, so it never
-sits there stale. **Re-highlight** in the panel puts it back.
+sits there stale. **Re-highlight** in the panel puts it back — as does clicking
+the line label on any exchange.
 
 Re-highlight refuses if the code has changed since you asked. The old line
 numbers would point at something else, and a confidently wrong highlight is
@@ -121,6 +142,15 @@ text. VS Code exposes no priority setting for decorations — where two overlap,
 the type registered first paints underneath — so ours is created at activation,
 which is the only lever the API offers.
 
+### Applying a fix
+
+Direct answer replies carry a fix card. **Apply to editor** writes the fix back
+into the exact lines you selected, after checking they have not changed;
+`Ctrl+Z` undoes it like any other edit. Afterwards the conversation continues
+("why did that work?") but highlighting and a second fix wait for a new
+selection, because the line numbers the model was given no longer describe the
+file. **Copy** always works.
+
 ### The panel
 
 The last 10 exchanges are kept; older ones drop off. Each shows the code you
@@ -132,8 +162,15 @@ cosmetic, capped at about a second however long the reply is, and skipped
 entirely when the OS asks for reduced motion. Turn it off with
 `socraticTutor.typewriter`.
 
-The composer at the bottom continues the conversation about the same selection —
-without it, Hint mode would hand you a question you had no way to answer.
+### Free-tier rate limits
+
+Groq's free tier meters input tokens per minute (7,000 for the Qwen model at
+the time of writing). Each request carries the system prompt plus the code plus
+the conversation — roughly 1,300 tokens — so a fast back-and-forth hits the
+ceiling after five or six turns. When the provider says to wait a few seconds,
+the extension waits and retries once on its own; you will notice a pause, not
+an error. A longer limit surfaces as a 429 in the panel with the provider's
+own message.
 
 ### Testing it offline
 
@@ -145,7 +182,7 @@ select; it is written for `samples/wrong_average.py`.
 
 | Command | What it does |
 |---|---|
-| `Ask Socratic Tutor` | The main one. Needs a selection; also on the editor right-click menu |
+| `Ask Socratic Tutor` | The main one. Needs a selection; on the right-click menu and `Ctrl+Alt+S` |
 | `Socratic Tutor: Open` | Opens the panel without asking anything |
 | `Socratic Tutor: New Session` | Clears the history, the highlight and the stats |
 | `Socratic Tutor: Show Session Stats` | Prints guardrail counts to the Output panel |

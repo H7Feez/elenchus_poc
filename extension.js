@@ -10,7 +10,16 @@ const guardrail = require('./guardrail');
 const { parseReply, sliceRange } = require('./parse');
 
 const SECRET_KEY = 'socraticTutor.apiKey';
+const LAST_MODE_KEY = 'socraticTutor.lastMode';
 const HISTORY_LIMIT = 10;
+
+/**
+ * How much of the conversation the model sees. The first turn (the code) is
+ * always kept; after that only the most recent turns go. A bounded window is
+ * the honest version of "limited context": a free-tier model on a long
+ * back-and-forth would otherwise degrade or fail outright.
+ */
+const THREAD_TAIL = 8;
 
 /**
  * The decoration used to point at lines in the editor.
@@ -29,6 +38,7 @@ let highlightType = null;
 let panel = null;
 let panelReady = false;
 const pendingPosts = [];
+let extensionContext = null;
 
 let session = newSession();
 
@@ -37,7 +47,7 @@ function newSession() {
     mode: promptLib.DEFAULT_MODE,
     thread: [],       // model conversation for the current selection
     history: [],      // display log, capped at HISTORY_LIMIT
-    anchor: null,     // { uri, range, text, code } — what we last highlighted
+    anchor: null,     // what we asked about: { uri, range, text, code, modelRange, stale }
     lastFix: null,
     stats: {
       asks: 0,
@@ -56,6 +66,8 @@ function newSession() {
 // ---------------------------------------------------------------------------
 
 function activate(context) {
+  extensionContext = context;
+
   highlightType = vscode.window.createTextEditorDecorationType({
     backgroundColor: new vscode.ThemeColor('editor.findMatchHighlightBackground'),
     // Do not grow or shrink when the student edits next to it. A stale
@@ -63,6 +75,13 @@ function activate(context) {
     rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed
   });
   context.subscriptions.push(highlightType);
+
+  // Start in whichever mode was used last, so the popup's Enter does what the
+  // student expects rather than what the settings default says.
+  session.mode = promptLib.modeOrDefault(
+    context.globalState.get(LAST_MODE_KEY) ||
+      vscode.workspace.getConfiguration('socraticTutor').get('defaultMode')
+  );
 
   context.subscriptions.push(
     vscode.commands.registerCommand('socraticTutor.askSelection', () => askSelection(context)),
@@ -78,7 +97,7 @@ function activate(context) {
   context.subscriptions.push(
     vscode.window.onDidChangeTextEditorSelection((e) => {
       if (Date.now() < suppressClearUntil) return;
-      if (e.textEditor.document.uri.toString() === (session.anchor && session.anchor.uri)) {
+      if (session.anchor && e.textEditor.document.uri.toString() === session.anchor.uri) {
         clearHighlight();
       }
     })
@@ -86,6 +105,14 @@ function activate(context) {
 }
 
 function deactivate() {}
+
+function setMode(mode) {
+  session.mode = promptLib.modeOrDefault(mode);
+  if (extensionContext) {
+    extensionContext.globalState.update(LAST_MODE_KEY, session.mode);
+  }
+  postModes();
+}
 
 // ---------------------------------------------------------------------------
 // Highlighting
@@ -124,11 +151,21 @@ function clearHighlight() {
  * Puts the highlight back, but only if the code is still the code we asked
  * about. If it has been edited the old range means nothing, and lighting up
  * whatever now sits at those coordinates would be actively misleading.
+ *
+ * Restores the lines the model pointed at, not the whole selection — that is
+ * what "the last highlighted code" means to the student.
  */
 async function reHighlight() {
   const a = session.anchor;
   if (!a) {
     post({ type: 'notice', text: 'Nothing has been highlighted yet.' });
+    return;
+  }
+  if (a.stale) {
+    post({
+      type: 'notice',
+      text: 'That code was changed by the fix you applied, so the old highlight no longer applies. Select it again to continue.'
+    });
     return;
   }
 
@@ -141,25 +178,22 @@ async function reHighlight() {
   }
   await vscode.window.showTextDocument(doc, { preserveFocus: true, preview: false });
 
-  if (doc.getText(a.range) === a.text) {
-    applyHighlight(a.uri, a.range);
-    return;
+  if (doc.getText(a.range) !== a.text) {
+    // It may simply have moved. Accept that only when there is one candidate.
+    const whole = doc.getText();
+    const at = whole.indexOf(a.text);
+    if (at === -1 || at !== whole.lastIndexOf(a.text)) {
+      post({
+        type: 'notice',
+        text: 'That code has changed since you asked, so the old highlight would point at the wrong thing.'
+      });
+      return;
+    }
+    a.range = new vscode.Range(doc.positionAt(at), doc.positionAt(at + a.text.length));
   }
 
-  // It may simply have moved. Accept that only when there is one candidate.
-  const whole = doc.getText();
-  const at = whole.indexOf(a.text);
-  if (at !== -1 && at === whole.lastIndexOf(a.text)) {
-    const moved = new vscode.Range(doc.positionAt(at), doc.positionAt(at + a.text.length));
-    session.anchor.range = moved;
-    applyHighlight(a.uri, moved);
-    return;
-  }
-
-  post({
-    type: 'notice',
-    text: 'That code has changed since you asked, so the old highlight would point at the wrong thing.'
-  });
+  const target = a.modelRange ? modelRangeToDocument(a.modelRange) : a.range;
+  applyHighlight(a.uri, target || a.range);
 }
 
 // ---------------------------------------------------------------------------
@@ -177,74 +211,116 @@ async function askSelection(context) {
     return;
   }
 
-  const selection = new vscode.Range(editor.selection.start, editor.selection.end);
-  const code = editor.document.getText(selection);
+  // Snap to whole lines. Everything downstream — the numbering the model sees,
+  // the highlight, the fix that gets written back — works in whole lines, so a
+  // selection that starts mid-line would silently disagree with all of it.
+  // Dragging down the gutter also leaves the end at column 0 of the NEXT line,
+  // which would count one line too many.
+  const doc = editor.document;
+  let endLine = editor.selection.end.line;
+  if (editor.selection.end.character === 0 && endLine > editor.selection.start.line) {
+    endLine -= 1;
+  }
+  const selection = new vscode.Range(
+    editor.selection.start.line, 0,
+    endLine, doc.lineAt(endLine).range.end.character
+  );
+
+  const raw = doc.getText(selection);
+  const code = raw.replace(/\r\n?/g, '\n').replace(/\s+$/, '');
+  if (!code.trim()) {
+    vscode.window.showWarningMessage('Socratic Tutor: the selection is empty.');
+    return;
+  }
 
   const asked = await askForContext();
   if (!asked) return; // dismissed
 
-  session.mode = asked.mode;
+  setMode(asked.mode);
   session.thread = [];
   session.lastFix = null;
   session.anchor = {
-    uri: editor.document.uri.toString(),
+    uri: doc.uri.toString(),
     range: selection,
-    text: code,
-    code
+    text: raw,         // exact document text, for "has it changed" checks
+    code,              // normalised, what the model and the panel see
+    modelRange: null,  // the lines the model last pointed at, 1-based
+    stale: false
   };
 
   openPanel(context);
-  await run(context, {
-    code,
-    context: asked.context,
-    firstTurn: true
-  });
+  await run(context, { code, context: asked.context, firstTurn: true });
 }
 
 /**
- * One popup: a text field for the question, and three buttons for the modes.
+ * One popup: type a question (or nothing), then pick how much help you want.
  *
- * VS Code has no widget that is literally a box with buttons inside it. This
- * is the closest real thing — the QuickInput title-bar buttons — and it keeps
- * the whole interaction to a single popup as intended. Enter submits with
- * whichever mode was last used, which is named in the prompt line.
+ * This is a QuickPick rather than an input box with title-bar buttons. The
+ * buttons never reliably rendered, and rows have two other advantages: they
+ * carry a label and a description, so the choice explains itself, and they
+ * cannot fail to appear. `alwaysShow` keeps all three visible while the
+ * student types, instead of being filtered away by their own question.
+ *
+ * Enter picks the highlighted row. The mode used last time is placed first and
+ * kept active as the student types, so Enter stays predictable.
  */
 function askForContext() {
   return new Promise((resolve) => {
-    const input = vscode.window.createInputBox();
+    const qp = vscode.window.createQuickPick();
 
-    const buttons = Object.keys(promptLib.MODES).map((id) => ({
+    const order = [session.mode].concat(
+      Object.keys(promptLib.MODES).filter((id) => id !== session.mode)
+    );
+    const items = order.map((id) => ({
       modeId: id,
-      iconPath: new vscode.ThemeIcon(MODE_ICONS[id]),
-      tooltip: promptLib.MODES[id].label + ' — ' + promptLib.MODES[id].note
+      label: '$(' + MODE_ICONS[id] + ') ' + promptLib.MODES[id].label,
+      description: promptLib.MODES[id].note,
+      alwaysShow: true
     }));
 
-    input.title = 'Ask Socratic Tutor';
-    input.placeholder = 'Add a question or context, or leave empty';
-    input.prompt =
-      'Enter uses ' + promptLib.MODES[session.mode].label + '. The buttons choose a mode.';
-    input.buttons = buttons;
-    input.ignoreFocusOut = true;
+    qp.title = 'Ask Socratic Tutor';
+    qp.placeholder = 'Type a question or some context — or leave this empty and just pick a row';
+    qp.items = items;
+    qp.activeItems = [items[0]];
+    qp.matchOnDescription = false;
+    qp.matchOnDetail = false;
+    qp.ignoreFocusOut = true;
+
+    // Typing changes the fuzzy match, which can move the active row. Pin it
+    // back so Enter always means "the row that was highlighted a moment ago".
+    let pinned = items[0];
+    qp.onDidChangeValue(() => {
+      if (!qp.activeItems.length || qp.activeItems[0] !== pinned) {
+        qp.activeItems = [pinned];
+      }
+    });
+    qp.onDidChangeActive((active) => {
+      if (active.length && active[0] !== pinned && qp.value === '') {
+        pinned = active[0];
+      }
+    });
 
     let settled = false;
     const finish = (value) => {
       if (settled) return;
       settled = true;
       resolve(value);
-      input.hide();
+      qp.hide();
     };
 
-    input.onDidTriggerButton((b) => finish({ context: input.value.trim(), mode: b.modeId }));
-    input.onDidAccept(() => finish({ context: input.value.trim(), mode: session.mode }));
-    input.onDidHide(() => {
+    qp.onDidAccept(() => {
+      const item = qp.selectedItems[0] || qp.activeItems[0] || pinned;
+      finish({ context: qp.value.trim(), mode: item.modeId });
+    });
+    qp.onDidHide(() => {
       if (!settled) {
         settled = true;
         resolve(null);
       }
-      input.dispose();
+      qp.dispose();
     });
 
-    input.show();
+    qp.show();
   });
 }
 
@@ -259,6 +335,7 @@ const MODE_ICONS = {
 // ---------------------------------------------------------------------------
 
 async function run(context, req) {
+  const s = session; // so a Clear History mid-request cannot leak into the new one
   const cfg = vscode.workspace.getConfiguration('socraticTutor');
   const provider = cfg.get('provider');
 
@@ -266,22 +343,23 @@ async function run(context, req) {
     ? promptLib.buildFirstTurn(req.code, req.context)
     : req.context;
 
-  session.thread.push({ role: 'user', content: userText });
-  session.stats.asks += 1;
-  session.stats.byMode[session.mode] += 1;
+  s.thread.push({ role: 'user', content: userText });
+  trimThread(s);
+  s.stats.asks += 1;
+  s.stats.byMode[s.mode] += 1;
 
   const entry = {
     id: 'e' + Date.now() + Math.random().toString(36).slice(2, 6),
-    mode: session.mode,
-    modeLabel: promptLib.MODES[session.mode].label,
+    mode: s.mode,
+    modeLabel: promptLib.MODES[s.mode].label,
     code: req.firstTurn ? req.code : null,
-    startLine: req.firstTurn && session.anchor ? session.anchor.range.start.line + 1 : null,
+    startLine: req.firstTurn && s.anchor ? s.anchor.range.start.line + 1 : null,
     question: req.context || '',
     response: null,
     flag: null,
     fix: null
   };
-  pushHistory(entry);
+  pushHistory(s, entry);
   post({ type: 'entry', entry });
 
   const apiKey = await context.secrets.get(SECRET_KEY);
@@ -297,29 +375,33 @@ async function run(context, req) {
     baseUrl: cfg.get('baseUrl'),
     model: cfg.get('model'),
     temperature: cfg.get('temperature'),
-    mode: session.mode,
+    mode: s.mode,
     apiKey
   };
 
   post({ type: 'busy', value: true });
   try {
-    const reply = await askWithGuardrail(opts);
-    session.thread.push({ role: 'assistant', content: reply.raw });
+    const reply = await askWithGuardrail(s, opts);
+    if (s !== session) return; // history was cleared while we waited
+
+    s.thread.push({ role: 'assistant', content: reply.raw });
 
     entry.response = reply.text;
     entry.flag = reply.flag;
 
-    if (reply.fix && reply.range) {
-      session.lastFix = { range: reply.range, replacement: reply.fix };
+    if (reply.fix && reply.range && s.anchor && !s.anchor.stale) {
+      s.lastFix = { range: reply.range, replacement: reply.fix };
       entry.fix = { range: reply.range, code: reply.fix };
     }
 
-    if (reply.range && session.anchor) {
+    if (reply.range && s.anchor && !s.anchor.stale) {
+      s.anchor.modelRange = reply.range;
       highlightModelRange(reply.range);
     }
 
     post({ type: 'resolve', id: entry.id, entry });
   } catch (err) {
+    if (s !== session) return;
     entry.response = String(err && err.message ? err.message : err);
     entry.flag = 'error';
     post({ type: 'resolve', id: entry.id, entry, instant: true });
@@ -328,39 +410,53 @@ async function run(context, req) {
   }
 }
 
+/**
+ * Keeps the first user turn (the code) and the most recent turns. The tail is
+ * cut at an assistant turn so the model never sees two user messages in a row,
+ * which some providers reject.
+ */
+function trimThread(s) {
+  if (s.thread.length <= THREAD_TAIL + 1) return;
+  let tail = s.thread.slice(-THREAD_TAIL);
+  if (tail[0].role === 'user' && s.thread.length > THREAD_TAIL + 1) {
+    tail = s.thread.slice(-(THREAD_TAIL + 1));
+  }
+  s.thread = [s.thread[0]].concat(tail);
+}
+
 /** Maps a 1-based line range inside the selection onto the document. */
 function modelRangeToDocument(range) {
   const a = session.anchor;
-  if (!a) return null;
+  if (!a || !range) return null;
   const base = a.range.start.line;
   const startLine = base + range.start - 1;
   const endLine = base + range.end - 1;
-  if (startLine < a.range.start.line || endLine > a.range.end.line) return null;
+  if (endLine > a.range.end.line) return null;
   return new vscode.Range(startLine, 0, endLine, Number.MAX_SAFE_INTEGER);
 }
 
 function highlightModelRange(range) {
   const docRange = modelRangeToDocument(range);
   if (!docRange) return;
-  session.anchor.highlighted = docRange;
   applyHighlight(session.anchor.uri, docRange);
 }
 
-async function askWithGuardrail(opts) {
+async function askWithGuardrail(s, opts) {
   const cfg = vscode.workspace.getConfiguration('socraticTutor');
-  const enabled = cfg.get('guardrailEnabled') && promptLib.guardrailApplies(session.mode);
+  const enabled = cfg.get('guardrailEnabled') && promptLib.guardrailApplies(s.mode);
 
-  const base = [{ role: 'system', content: promptLib.buildSystemPrompt(session.mode) }]
-    .concat(session.thread);
+  const base = [{ role: 'system', content: promptLib.buildSystemPrompt(s.mode) }]
+    .concat(s.thread);
 
   const first = await getReply(base, opts);
   const parsedFirst = parseReply(first);
-  const mayHighlight = promptLib.highlightApplies(session.mode);
+  const mayHighlight = promptLib.highlightApplies(s.mode);
 
   if (!enabled) {
     return {
       raw: first,
-      text: parsedFirst.prose || first,
+      // A reply that is nothing but a fix block still needs a sentence in front.
+      text: parsedFirst.prose || (parsedFirst.fix ? "Here's the fix." : first),
       range: mayHighlight ? parsedFirst.range : null,
       fix: parsedFirst.fix,
       flag: null
@@ -369,7 +465,7 @@ async function askWithGuardrail(opts) {
 
   const check = guardrail.inspect(parsedFirst.prose);
   if (!check.blocked) {
-    if (!guardrail.hasQuestion(parsedFirst.prose)) session.stats.repliesWithoutQuestion += 1;
+    if (!guardrail.hasQuestion(parsedFirst.prose)) s.stats.repliesWithoutQuestion += 1;
     return {
       raw: first,
       text: parsedFirst.prose,
@@ -379,12 +475,9 @@ async function askWithGuardrail(opts) {
     };
   }
 
-  session.stats.guardrailFired += 1;
-  session.stats.reasons.push.apply(
-    session.stats.reasons,
-    check.reasons.map((r) => session.mode + ': ' + r)
-  );
-  log('guardrail fired (' + session.mode + '): ' + check.reasons.join('; '));
+  s.stats.guardrailFired += 1;
+  s.stats.reasons.push.apply(s.stats.reasons, check.reasons.map((r) => s.mode + ': ' + r));
+  log('guardrail fired (' + s.mode + '): ' + check.reasons.join('; '));
 
   const second = await getReply(
     base.concat([
@@ -406,12 +499,12 @@ async function askWithGuardrail(opts) {
     };
   }
 
-  session.stats.guardrailBlocked += 1;
-  session.stats.reasons.push.apply(
-    session.stats.reasons,
-    recheck.reasons.map((r) => session.mode + ' on rewrite: ' + r)
+  s.stats.guardrailBlocked += 1;
+  s.stats.reasons.push.apply(
+    s.stats.reasons,
+    recheck.reasons.map((r) => s.mode + ' on rewrite: ' + r)
   );
-  log('guardrail blocked after rewrite (' + session.mode + '): ' + recheck.reasons.join('; '));
+  log('guardrail blocked after rewrite (' + s.mode + '): ' + recheck.reasons.join('; '));
   return {
     raw: promptLib.BLOCKED_MESSAGE,
     text: promptLib.BLOCKED_MESSAGE,
@@ -421,10 +514,10 @@ async function askWithGuardrail(opts) {
   };
 }
 
-function pushHistory(entry) {
-  session.history.push(entry);
-  while (session.history.length > HISTORY_LIMIT) {
-    session.history.shift();
+function pushHistory(s, entry) {
+  s.history.push(entry);
+  while (s.history.length > HISTORY_LIMIT) {
+    s.history.shift();
   }
 }
 
@@ -433,26 +526,26 @@ function pushHistory(entry) {
 // ---------------------------------------------------------------------------
 
 /**
- * Much more certain than it used to be: we know the exact document and range
- * the student selected, so the fix goes back where it came from. It still
- * verifies the text has not changed underneath it first.
+ * We know the exact document and range the student selected, so the fix goes
+ * back where it came from. It still verifies the text has not changed
+ * underneath it first.
+ *
+ * Afterwards the anchor is marked stale rather than dropped: the conversation
+ * can continue ("why did that work?"), but highlighting and a second fix are
+ * off until the student selects again, because the line numbers the model was
+ * given no longer describe the file.
  */
 async function applyFixToEditor() {
   const fix = session.lastFix;
   const a = session.anchor;
-  if (!fix || !a) {
+  if (!fix || !a || a.stale) {
     post({ type: 'notice', text: 'There is no fix to apply.' });
     return;
   }
 
   const expected = sliceRange(a.code, fix.range);
-  if (expected === null) {
-    post({ type: 'notice', text: 'The suggested lines fall outside the code you selected.' });
-    return;
-  }
-
   const docRange = modelRangeToDocument(fix.range);
-  if (!docRange) {
+  if (expected === null || !docRange) {
     post({ type: 'notice', text: 'The suggested lines fall outside the code you selected.' });
     return;
   }
@@ -490,7 +583,7 @@ async function applyFixToEditor() {
 
   session.stats.fixesApplied += 1;
   session.lastFix = null;
-  session.anchor = null; // the code we asked about no longer exists
+  a.stale = true;
   clearHighlight();
   post({ type: 'fixApplied' });
   vscode.window.showInformationMessage('Socratic Tutor: fix applied. Undo with Ctrl+Z.');
@@ -552,7 +645,7 @@ function renderHtml(context, webview) {
 }
 
 /**
- * The panel is now opened at the moment a question is asked, so the first few
+ * The panel is opened at the moment a question is asked, so the first few
  * messages routinely arrive before the webview has finished loading. Queue
  * until it says it is ready, or the opening exchange vanishes.
  */
@@ -565,9 +658,17 @@ function post(message) {
   panel.webview.postMessage(message);
 }
 
+/**
+ * On ready, `init` already carries the full history, so any queued `entry`
+ * for something in that history would render it a second time. Drop those;
+ * keep everything else (the `resolve` that fills it in, busy state, notices).
+ */
 function flushPosts() {
+  const known = new Set(session.history.map((e) => e.id));
   while (pendingPosts.length) {
-    panel.webview.postMessage(pendingPosts.shift());
+    const m = pendingPosts.shift();
+    if (m.type === 'entry' && known.has(m.entry.id)) continue;
+    panel.webview.postMessage(m);
   }
 }
 
@@ -581,17 +682,34 @@ function postModelLabel() {
   });
 }
 
+function postModes() {
+  post({
+    type: 'modes',
+    modes: Object.keys(promptLib.MODES).map((id) => ({
+      id,
+      label: promptLib.MODES[id].label,
+      note: promptLib.MODES[id].note
+    })),
+    active: session.mode
+  });
+}
+
+function initPayload() {
+  return {
+    type: 'init',
+    history: session.history,
+    typewriter: vscode.workspace.getConfiguration('socraticTutor').get('typewriter'),
+    limit: HISTORY_LIMIT
+  };
+}
+
 async function handleMessage(context, msg) {
   switch (msg.type) {
     case 'ready':
       panelReady = true;
-      panel.webview.postMessage({
-        type: 'init',
-        history: session.history,
-        typewriter: vscode.workspace.getConfiguration('socraticTutor').get('typewriter'),
-        limit: HISTORY_LIMIT
-      });
+      panel.webview.postMessage(initPayload());
       flushPosts();
+      postModes();
       postModelLabel();
       break;
     case 'reply':
@@ -600,6 +718,9 @@ async function handleMessage(context, msg) {
         return;
       }
       await run(context, { context: msg.text, firstTurn: false });
+      break;
+    case 'setMode':
+      setMode(msg.mode);
       break;
     case 'reHighlight':
       await reHighlight();
@@ -713,7 +834,8 @@ function resetSession() {
   clearHighlight();
   session = newSession();
   session.mode = keepMode;
-  post({ type: 'init', history: [], typewriter: vscode.workspace.getConfiguration('socraticTutor').get('typewriter'), limit: HISTORY_LIMIT });
+  post(initPayload());
+  postModes();
   postModelLabel();
 }
 
@@ -748,4 +870,4 @@ function log(text) {
   channel().appendLine('[' + new Date().toISOString() + '] ' + text);
 }
 
-module.exports = { activate, deactivate };
+module.exports = { activate, deactivate, trimThread };

@@ -44,20 +44,20 @@ async function getReply(messages, opts) {
  */
 const MOCK_LADDER = {
   hint: [
-    'Look at line 3. How many times does that line run while the loop is going?',
-    'Print total at the start and end of each pass. What do you expect to see, and what do you actually see?',
-    'So total is not carrying anything between passes. What would have to be true for it to accumulate?',
-    'This is the shape of a variable being reset inside the thing that should be building it up. Where does yours start?'
+    "Good one to get stuck on — this catches a lot of people. Have a look at line 3 and think about how many times that line actually runs while the loop is going. What's your guess?",
+    "Fair enough, it's not obvious from reading. Try printing total at the start and end of each pass. What do you expect to see, and what actually comes out?",
+    "You're close. So total isn't carrying anything between passes — what would have to be true for it to build up instead of starting over?",
+    "You've basically found it. This is a variable being reset inside the very thing that's supposed to be accumulating it. Where does yours get its starting value?"
   ],
   strong: [
-    'Line 3 runs on every pass of the loop, not once before it. Is that what you intended?\n\nLINES: 3',
-    'On the second pass, what is the value of total immediately after line 3 executes?\n\nLINES: 3',
-    'So each pass throws away what the last one added. Which line needs to run only once?\n\nLINES: 2-4',
-    'This is a variable being reset inside the loop that should be accumulating it. Where should it start instead?\n\nLINES: 2-4'
+    "Nice, this is a good one to learn from. Line 3 runs on every pass of the loop, not once before it — is that what you meant to happen?\n\nLINES: 3",
+    "No worries, let's narrow it. On the second pass through the loop, what's the value of total immediately after line 3 runs?\n\nLINES: 3",
+    "Right — so each pass throws away what the last one added. Which of these lines needs to run only once?\n\nLINES: 2-4",
+    "You're nearly there. This is a variable being reset inside the loop that should be accumulating it. Where should it start instead?\n\nLINES: 2-4"
   ],
   direct: [
-    'total is set back to 0 on every pass of the loop, so it only ever holds the last value added. ' +
-      'The initialisation belongs above the loop, where it runs once.\n\n' +
+    "Here's what's going on: total gets set back to 0 on every pass of the loop, so it only ever holds the last value that was added. " +
+      "The line that starts it at 0 belongs above the loop, where it runs once. Easy one to miss.\n\n" +
       'LINES: 2-4\nFIX:\n```python\n    total = 0\n    for n in nums:\n        total += n\n```'
   ]
 };
@@ -160,7 +160,16 @@ async function ollamaAdapter(messages, opts) {
  * The failure messages here are deliberately specific. A student hitting a
  * rate limit and a student with a bad key should not see the same sentence.
  */
-async function postJson(url, headers, body) {
+/**
+ * Free tiers meter input tokens per minute, and a quick back-and-forth with a
+ * ~1k-token system prompt hits that ceiling in a handful of turns. Providers
+ * say exactly how long to wait, so when it is short we just wait, once, rather
+ * than hand the student an error for something that clears itself in seconds.
+ */
+const RETRY_AFTER_MAX_S = 15;
+
+async function postJson(url, headers, body, attempt) {
+  attempt = attempt || 1;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
@@ -183,6 +192,14 @@ async function postJson(url, headers, body) {
 
   const raw = await response.text();
 
+  if (response.status === 429 && attempt === 1) {
+    const wait = retryAfterSeconds(response, raw);
+    if (wait !== null && wait <= RETRY_AFTER_MAX_S) {
+      await new Promise((r) => setTimeout(r, Math.ceil(wait * 1000) + 250));
+      return postJson(url, headers, body, 2);
+    }
+  }
+
   if (!response.ok) {
     throw new Error(explainHttpError(response.status, raw));
   }
@@ -192,6 +209,16 @@ async function postJson(url, headers, body) {
   } catch (_e) {
     throw new Error('The provider returned something that is not JSON: ' + preview(raw));
   }
+}
+
+/** The Retry-After header when present; otherwise Groq's "try again in 1.3s". */
+function retryAfterSeconds(response, raw) {
+  const header = response.headers && response.headers.get && response.headers.get('retry-after');
+  if (header && !isNaN(parseFloat(header))) return parseFloat(header);
+  const m = /try again in\s+([\d.]+)\s*(ms|s)?/i.exec(raw || '');
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  return m[2] === 'ms' ? n / 1000 : n;
 }
 
 function explainHttpError(status, raw) {

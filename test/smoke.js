@@ -49,6 +49,64 @@ check('hasQuestion false', !guardrail.hasQuestion('That is correct.'));
 check('blocks an empty reply', guardrail.inspect('').blocked);
 check('blocks a whitespace-only reply', guardrail.inspect('   \n  ').blocked);
 
+// "you should add ..." is a hint technique when it is about a diagnostic, and
+// a spoiler when it is the fix itself. The backticks are what separates them.
+check('allows "you should add a print to check"', !guardrail.inspect('Good instinct. You should add a print inside the loop to check what total is doing. What comes out?').blocked);
+check('blocks "you should add `total = 0`"', guardrail.inspect('You should add `total = 0` above the loop.').blocked);
+check('still blocks "you need to change"', guardrail.inspect('You need to change line 3.').blocked);
+
+// The friendlier prompt allows a sentence of warmth around the question, so
+// the ceiling had to move. A reply of this length must pass.
+check('allows a warm ~90-word hint', !guardrail.inspect(
+  "Good one to get stuck on — this catches a lot of people, so don't feel bad about it. " +
+  "Have a look at line 3 and think about how many times that particular line actually runs " +
+  "while the loop is going round. It might help to put a print just after it and watch what " +
+  "comes out on each pass. What's your guess before you run it?"
+).blocked);
+
+// --- trimThread: bounded conversation memory ---
+// extension.js requires 'vscode', which does not exist outside the editor.
+// It touches nothing on it at load time, so an empty stub is enough to import.
+const Module = require('module');
+const realResolve = Module._resolveFilename;
+Module._resolveFilename = function (request, parent, isMain, options) {
+  if (request === 'vscode') return 'vscode';
+  return realResolve.call(this, request, parent, isMain, options);
+};
+require.cache['vscode'] = { id: 'vscode', filename: 'vscode', loaded: true, exports: {} };
+const { trimThread } = require(path + 'extension.js');
+
+function fakeThread(n) {
+  const t = [{ role: 'user', content: 'CODE' }];
+  for (let i = 1; i < n; i++) t.push({ role: i % 2 ? 'assistant' : 'user', content: 't' + i });
+  return t;
+}
+check('trimThread leaves a short thread alone', (function () {
+  const s = { thread: fakeThread(5) };
+  trimThread(s);
+  return s.thread.length === 5;
+})());
+check('trimThread keeps the code turn first', (function () {
+  const s = { thread: fakeThread(30) };
+  trimThread(s);
+  return s.thread[0].content === 'CODE';
+})());
+check('trimThread bounds the thread', (function () {
+  const s = { thread: fakeThread(30) };
+  trimThread(s);
+  return s.thread.length <= 10;
+})());
+check('trimThread never puts two user turns together', (function () {
+  for (let n = 10; n < 24; n++) {
+    const s = { thread: fakeThread(n) };
+    trimThread(s);
+    for (let i = 1; i < s.thread.length; i++) {
+      if (s.thread[i].role === 'user' && s.thread[i - 1].role === 'user') return false;
+    }
+  }
+  return true;
+})());
+
 // --- parse: the LINES marker ---
 check('parses a single line', (function () {
   const r = parse.parseReply('Look at it.\n\nLINES: 3');

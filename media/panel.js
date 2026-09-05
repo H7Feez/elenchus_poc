@@ -12,6 +12,8 @@
     busy: document.getElementById('busy'),
     notice: document.getElementById('notice'),
     model: document.getElementById('model'),
+    modes: document.getElementById('modes'),
+    modeNote: document.getElementById('modeNote'),
     composer: document.getElementById('composer'),
     reply: document.getElementById('reply'),
     send: document.getElementById('send'),
@@ -35,6 +37,28 @@
   grow(el.reply);
   el.reply.addEventListener('input', function () { grow(el.reply); });
 
+  // --- modes ------------------------------------------------------------
+  // The popup picks the mode for a new selection; this row changes it for
+  // follow-ups, so "I'm stuck, give me a strong hint now" is one click.
+
+  function renderModes(modes, active) {
+    el.modes.replaceChildren();
+    modes.forEach(function (mode) {
+      var btn = document.createElement('button');
+      btn.className = 'mode' + (mode.id === active ? ' active' : '');
+      btn.type = 'button';
+      btn.setAttribute('role', 'radio');
+      btn.setAttribute('aria-checked', mode.id === active ? 'true' : 'false');
+      btn.title = mode.note;
+      btn.textContent = mode.label;
+      btn.addEventListener('click', function () {
+        vscode.postMessage({ type: 'setMode', mode: mode.id });
+      });
+      el.modes.appendChild(btn);
+      if (mode.id === active) el.modeNote.textContent = 'Next reply: ' + mode.note;
+    });
+  }
+
   // --- outgoing ---------------------------------------------------------
 
   el.send.addEventListener('click', sendReply);
@@ -50,10 +74,12 @@
     vscode.postMessage({ type: 'newSession' });
   });
 
-  el.reHighlight.addEventListener('click', function () {
+  el.reHighlight.addEventListener('click', requestHighlight);
+
+  function requestHighlight() {
     clearNotice();
     vscode.postMessage({ type: 'reHighlight' });
-  });
+  }
 
   function sendReply() {
     var text = el.reply.value.trim();
@@ -71,6 +97,7 @@
     switch (msg.type) {
       case 'init':
         typewriterEnabled = msg.typewriter !== false;
+        finishTyping();
         el.history.replaceChildren();
         (msg.history || []).forEach(function (entry) {
           var node = renderEntry(entry);
@@ -79,6 +106,9 @@
           }
         });
         refreshChrome();
+        break;
+      case 'modes':
+        renderModes(msg.modes, msg.active);
         break;
       case 'entry':
         renderEntry(msg.entry);
@@ -119,11 +149,15 @@
   // this panel runs with scripts enabled.
 
   function renderEntry(entry) {
+    // The same entry can arrive twice — once inside `init`, once as a queued
+    // `entry` from before the panel was ready. Render it once.
+    var existing = document.getElementById(entry.id);
+    if (existing) return existing;
+
     var article = document.createElement('article');
     article.className = 'exchange';
     article.id = entry.id;
 
-    // Header: which mode, and where in the file it came from.
     var head = document.createElement('div');
     head.className = 'exchange-head';
 
@@ -133,18 +167,20 @@
     head.appendChild(badge);
 
     if (entry.startLine) {
-      var where = document.createElement('span');
+      var where = document.createElement('button');
       where.className = 'where';
+      where.type = 'button';
+      where.title = 'Show this code in the editor';
       var lines = entry.code ? entry.code.split('\n').length : 0;
       where.textContent =
         lines > 1
           ? 'lines ' + entry.startLine + '–' + (entry.startLine + lines - 1)
           : 'line ' + entry.startLine;
+      where.addEventListener('click', requestHighlight);
       head.appendChild(where);
     }
     article.appendChild(head);
 
-    // The selected code, collapsible so a long selection cannot bury the reply.
     if (entry.code) {
       var details = document.createElement('details');
       details.className = 'block code-block';
@@ -171,7 +207,7 @@
       q.className = 'block question';
       var qlabel = document.createElement('span');
       qlabel.className = 'block-label';
-      qlabel.textContent = entry.code ? 'You asked' : 'You replied';
+      qlabel.textContent = entry.code ? 'You asked' : 'You';
       q.appendChild(qlabel);
       var qtext = document.createElement('p');
       qtext.textContent = entry.question;
@@ -202,14 +238,14 @@
     if (entry.flag === 'error') resp.classList.add('failed');
 
     type(target, entry.response || '', instant, function () {
-      if (entry.flag && entry.flag !== 'error') {
+      if (entry.flag && entry.flag !== 'error' && !resp.querySelector('.flag')) {
         var badge = document.createElement('span');
         badge.className = 'flag ' + entry.flag;
         badge.textContent =
           entry.flag === 'rewritten' ? 'guardrail: rewritten' : 'guardrail: blocked';
         resp.appendChild(badge);
       }
-      if (entry.fix) renderFix(article, entry.fix);
+      if (entry.fix && !article.querySelector('.fixcard')) renderFix(article, entry.fix);
       scrollToEnd();
     });
   }
@@ -261,15 +297,26 @@
     article.appendChild(card);
   }
 
-  /**
-   * Reveals the reply progressively so a wall of text does not land at once.
-   * Purely cosmetic — the whole string is already here, and it is capped at
-   * about a second regardless of length so it never becomes the slow part.
-   */
-  var typing = null;
+  // --- typewriter -------------------------------------------------------
+  // Reveals the reply progressively so a wall of text does not land at once.
+  // Purely cosmetic — the whole string is already here, and it is capped at
+  // about a second regardless of length so it never becomes the slow part.
+
+  var typing = null; // { timer, target, text, done }
+
+  // If a new reply arrives mid-animation, the previous one is completed rather
+  // than abandoned, so its badge and fix card still get rendered.
+  function finishTyping() {
+    if (!typing) return;
+    clearInterval(typing.timer);
+    typing.target.textContent = typing.text;
+    var done = typing.done;
+    typing = null;
+    if (done) done();
+  }
 
   function type(target, text, instant, done) {
-    if (typing) { clearInterval(typing); typing = null; }
+    finishTyping();
 
     if (instant || !typewriterEnabled || reducedMotion || text.length < 24) {
       target.textContent = text;
@@ -280,17 +327,19 @@
     var ticks = 70;
     var step = Math.max(2, Math.ceil(text.length / ticks));
     var i = 0;
-    typing = setInterval(function () {
+    var job = { target: target, text: text, done: done, timer: null };
+    job.timer = setInterval(function () {
       i += step;
       target.textContent = text.slice(0, i);
       scrollToEnd();
       if (i >= text.length) {
-        clearInterval(typing);
-        typing = null;
+        clearInterval(job.timer);
+        if (typing === job) typing = null;
         target.textContent = text;
         if (done) done();
       }
     }, 14);
+    typing = job;
   }
 
   function refreshChrome() {

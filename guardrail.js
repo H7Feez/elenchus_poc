@@ -29,7 +29,10 @@ const CODE_LINE_PATTERNS = [
 const SPOILER_PHRASES = [
   /\bthe (bug|problem|issue|error) is\b/i,
   /\bthe fix is\b/i,
-  /\byou (need to|should) (change|replace|add|remove)\b/i,
+  /\byou (need to|should) (change|replace|remove)\b/i,
+  // "you should add a print to check" is a hint technique, not a spoiler.
+  // "you should add `total = 0`" is a spoiler. The backticks are the tell.
+  /\byou (need to|should|can|could) add\s+`[^`]+`/i,
   /\bchange (line|it) .* to\b/i,
   /\breplace .* with\b/i,
   /\bhere('s| is) the (corrected|fixed|working)\b/i,
@@ -37,7 +40,7 @@ const SPOILER_PHRASES = [
 ];
 
 const MAX_CONSECUTIVE_CODE_LINES = 2;
-const MAX_WORDS = 120; // the prompt asks for 60; this is the hard ceiling
+const MAX_WORDS = 160; // the prompt asks for 90; this is the hard ceiling
 
 /**
  * Inspects a model reply and decides whether it gave the game away.

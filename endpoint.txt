@@ -9,4 +9,4 @@
 #
 # Not running at the moment.
 
-https://notre-identifying-genetics-briefly.trycloudflare.com/v1
+https://suggest-dual-assistance-fog.trycloudflare.com/v1

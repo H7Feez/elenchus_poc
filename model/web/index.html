@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Elenchus — Socratic Debugging Tutor</title>
+<style>
+  :root {
+    --bg: #14171d;
+    --panel: #1b1f27;
+    --panel-2: #222733;
+    --line: #2c3340;
+    --ink: #e6e9ef;
+    --muted: #97a1b3;
+    --accent: #4ec0c8;
+    --amber: #d7a03c;
+    --red: #e08080;
+    --mono: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.6 -apple-system, "Segoe UI", system-ui, sans-serif;
+  }
+  .wrap { max-width: 780px; margin: 0 auto; padding: 20px 16px 60px; }
+
+  header { border-bottom: 1px solid var(--line); padding-bottom: 14px; margin-bottom: 18px; }
+  h1 { margin: 0 0 4px; font-size: 1.4rem; letter-spacing: -0.01em; }
+  h1 span { color: var(--accent); }
+  .sub { color: var(--muted); font-size: 0.9rem; margin: 0; }
+
+  .toggle { display: flex; gap: 0; border: 1px solid var(--line); border-radius: 6px;
+            overflow: hidden; margin: 16px 0 6px; }
+  .toggle button {
+    flex: 1; padding: 9px 10px; border: 0; background: transparent; color: var(--muted);
+    font: inherit; font-size: 0.88rem; cursor: pointer; border-right: 1px solid var(--line);
+  }
+  .toggle button:last-child { border-right: 0; }
+  .toggle button.on { background: var(--accent); color: #10262a; font-weight: 600; }
+  .toggle-note { color: var(--muted); font-size: 0.82rem; margin: 0 0 18px; min-height: 1.3em; }
+
+  label { display: block; font-size: 0.83rem; color: var(--muted); margin: 14px 0 5px;
+          text-transform: uppercase; letter-spacing: 0.07em; }
+  textarea, input {
+    width: 100%; background: var(--panel); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 6px; padding: 10px 11px; font: inherit; resize: vertical;
+  }
+  textarea { font-family: var(--mono); font-size: 13px; line-height: 1.5; min-height: 130px; }
+  textarea:focus, input:focus { outline: none; border-color: var(--accent); }
+
+  .row { display: flex; gap: 9px; flex-wrap: wrap; margin-top: 14px; align-items: center; }
+  button.go {
+    background: var(--accent); color: #10262a; border: 0; border-radius: 6px;
+    padding: 10px 20px; font: inherit; font-weight: 600; cursor: pointer;
+  }
+  button.go:disabled { opacity: 0.5; cursor: default; }
+  button.ghost {
+    background: transparent; color: var(--muted); border: 1px solid var(--line);
+    border-radius: 6px; padding: 9px 14px; font: inherit; font-size: 0.9rem; cursor: pointer;
+  }
+  button.ghost:hover { color: var(--ink); border-color: var(--muted); }
+
+  #thread { margin-top: 22px; display: flex; flex-direction: column; gap: 12px; }
+  .turn { border: 1px solid var(--line); border-radius: 8px; padding: 11px 13px; background: var(--panel); }
+  .turn.you { border-left: 3px solid var(--line); }
+  .turn.tutor { border-left: 3px solid var(--accent); background: var(--panel-2); }
+  .who { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.09em;
+         color: var(--muted); display: block; margin-bottom: 5px; }
+  .turn p { margin: 0; white-space: pre-wrap; word-wrap: break-word; }
+  .turn pre { margin: 6px 0 0; font-family: var(--mono); font-size: 12.5px;
+              white-space: pre; overflow-x: auto; color: var(--muted); }
+  .meta { margin-top: 8px; font-size: 0.76rem; color: var(--muted); }
+  .badge { display: inline-block; border: 1px solid currentColor; border-radius: 4px;
+           padding: 1px 6px; font-size: 0.72rem; margin-right: 7px; }
+  .badge.blocked { color: var(--red); }
+  .badge.base { color: var(--amber); }
+  .badge.ok { color: var(--accent); }
+
+  #busy { color: var(--muted); font-style: italic; margin-top: 14px; }
+  #err { display: none; margin-top: 14px; border: 1px solid var(--amber); color: var(--amber);
+         border-radius: 6px; padding: 9px 12px; font-size: 0.9rem; }
+  footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--line);
+           color: var(--muted); font-size: 0.8rem; }
+  @media (max-width: 520px) { .wrap { padding: 14px 12px 50px; } h1 { font-size: 1.2rem; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1><span>Elenchus</span> — Socratic Debugging Tutor</h1>
+    <p class="sub">SIC AI capstone. A 0.5B model fine-tuned on 134 expert tutoring dialogues.
+       It answers with questions, not fixes.</p>
+  </header>
+
+  <div class="toggle" role="group" aria-label="Which model answers">
+    <button id="btnTrained" class="on" type="button">Our fine-tuned model</button>
+    <button id="btnBase" type="button">Untrained base model</button>
+  </div>
+  <p class="toggle-note" id="toggleNote">Trained on the Socratic Debugging Benchmark.</p>
+
+  <div id="setup">
+    <label for="code">Buggy code</label>
+    <textarea id="code" spellcheck="false" placeholder="Paste some Python here..."></textarea>
+
+    <label for="question">Your question <span style="text-transform:none;letter-spacing:0">(optional)</span></label>
+    <input id="question" placeholder="e.g. why is this giving the wrong answer?">
+
+    <div class="row">
+      <button class="go" id="ask" type="button">Ask the tutor</button>
+      <button class="ghost" id="sample" type="button">Load an example bug</button>
+    </div>
+  </div>
+
+  <div id="thread"></div>
+  <div id="busy" hidden>thinking…</div>
+  <div id="err"></div>
+
+  <div class="row" id="followRow" hidden>
+    <input id="follow" placeholder="Answer the tutor, or say you're stuck…" style="flex:1;min-width:200px">
+    <button class="go" id="send" type="button">Send</button>
+    <button class="ghost" id="reset" type="button">Start over</button>
+  </div>
+
+  <footer>
+    Replies are checked by our Direct Output Filter before you see them. A
+    <span class="badge blocked">blocked</span> badge means the model tried to hand over the
+    answer and was caught. Try the same bug on both models to see what the training changed.
+  </footer>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var el = function (id) { return document.getElementById(id); };
+  var trained = true;
+  var history = [];   // the running conversation, sent back each turn
+  var code = "";
+
+  var SAMPLE = 'def average(nums):\n    for n in nums:\n        total = 0\n        total += n\n    return total / len(nums)\n\nprint(average([10, 20, 30, 40]))';
+
+  function setModel(useTrained) {
+    trained = useTrained;
+    el("btnTrained").classList.toggle("on", useTrained);
+    el("btnBase").classList.toggle("on", !useTrained);
+    el("toggleNote").textContent = useTrained
+      ? "Trained on the Socratic Debugging Benchmark."
+      : "The same model with the training switched off. Watch what it does instead.";
+  }
+
+  el("btnTrained").onclick = function () { setModel(true); };
+  el("btnBase").onclick = function () { setModel(false); };
+
+  el("sample").onclick = function () {
+    el("code").value = SAMPLE;
+    el("question").value = "why is this giving 10 instead of 25?";
+  };
+
+  function addTurn(who, text, codeBlock) {
+    var d = document.createElement("div");
+    d.className = "turn " + (who === "You" ? "you" : "tutor");
+    var w = document.createElement("span");
+    w.className = "who"; w.textContent = who;
+    d.appendChild(w);
+    var p = document.createElement("p");
+    p.textContent = text;
+    d.appendChild(p);
+    if (codeBlock) {
+      var pre = document.createElement("pre");
+      pre.textContent = codeBlock;
+      d.appendChild(pre);
+    }
+    el("thread").appendChild(d);
+    d.scrollIntoView({ block: "nearest" });
+    return d;
+  }
+
+  function addMeta(node, data) {
+    var m = document.createElement("div");
+    m.className = "meta";
+    var b = document.createElement("span");
+    if (data.blocked) {
+      b.className = "badge blocked";
+      b.textContent = "blocked: " + data.reasons.join("; ");
+    } else {
+      b.className = "badge ok";
+      b.textContent = "passed the filter";
+    }
+    m.appendChild(b);
+    if (data.model && data.model.indexOf("base") !== -1) {
+      var t = document.createElement("span");
+      t.className = "badge base";
+      t.textContent = "untrained model";
+      m.appendChild(t);
+    }
+    m.appendChild(document.createTextNode(data.seconds + "s"));
+    node.appendChild(m);
+  }
+
+  function fail(msg) {
+    var e = el("err");
+    e.textContent = msg;
+    e.style.display = "block";
+  }
+
+  function busy(on) {
+    el("busy").hidden = !on;
+    el("ask").disabled = on;
+    el("send").disabled = on;
+  }
+
+  function post(body, onDone) {
+    el("err").style.display = "none";
+    busy(true);
+    fetch("/ask", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    }).then(function (r) {
+      return r.json().then(function (j) {
+        if (!r.ok) throw new Error((j.error && j.error.message) || ("HTTP " + r.status));
+        return j;
+      });
+    }).then(function (j) {
+      busy(false);
+      onDone(j);
+    }).catch(function (e) {
+      busy(false);
+      fail(e.message || String(e));
+    });
+  }
+
+  el("ask").onclick = function () {
+    var c = el("code").value.trim();
+    var q = el("question").value.trim();
+    if (!c) { fail("Paste some code first."); return; }
+    code = c;
+    addTurn("You", q || "What's wrong with this?", c);
+    post({ code: c, question: q, trained: trained }, function (j) {
+      history = [{ role: "user", content: j.turn }, { role: "assistant", content: j.reply }];
+      addMeta(addTurn("Tutor", j.reply), j);
+      el("setup").hidden = true;
+      el("followRow").hidden = false;
+      el("follow").focus();
+    });
+  };
+
+  function sendFollow() {
+    var q = el("follow").value.trim();
+    if (!q) return;
+    el("follow").value = "";
+    addTurn("You", q);
+    post({ history: history, question: q, trained: trained }, function (j) {
+      history.push({ role: "user", content: q });
+      history.push({ role: "assistant", content: j.reply });
+      if (history.length > 10) history = history.slice(-10);
+      addMeta(addTurn("Tutor", j.reply), j);
+    });
+  }
+
+  el("send").onclick = sendFollow;
+  el("follow").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") { e.preventDefault(); sendFollow(); }
+  });
+
+  el("reset").onclick = function () {
+    history = []; code = "";
+    el("thread").replaceChildren();
+    el("setup").hidden = false;
+    el("followRow").hidden = true;
+    el("err").style.display = "none";
+    el("code").focus();
+  };
+})();
+</script>
+</body>
+</html>

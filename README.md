@@ -1,8 +1,7 @@
 # Socratic Tutor — proof of concept
 
 A VS Code extension that answers a stuck student with **a question**, never with
-the fix. Built for the SIC AI capstone as a working shell to test the idea in;
-the model itself is deliberately not connected yet.
+the fix. Built for the SIC AI capstone as a working shell to test the idea in.
 
 ## What works today
 
@@ -43,7 +42,7 @@ directory, so cloning there installs the extension, and `git pull` updates it.
 Clone it once:
 
 ```powershell
-git clone https://github.com/OWNER/socratic-tutor-poc.git "$env:USERPROFILE\.vscode\extensions\socratic-tutor-poc"
+git clone https://github.com/H7Feez/elenchus_poc.git "$env:USERPROFILE\.vscode\extensions\elenchus_poc"
 ```
 
 Restart VS Code. The commands appear in every window from then on.
@@ -51,7 +50,7 @@ Restart VS Code. The commands appear in every window from then on.
 To update, pull and reload:
 
 ```powershell
-git -C "$env:USERPROFILE\.vscode\extensions\socratic-tutor-poc" pull
+git -C "$env:USERPROFILE\.vscode\extensions\elenchus_poc" pull
 ```
 
 Then `Ctrl+Shift+P` → *Developer: Reload Window*. To uninstall, delete the
@@ -83,8 +82,18 @@ Silent background updates only happen for extensions published to the VS Code
 Marketplace, which needs a publisher account and a public listing. `git pull`
 is the closest equivalent, and for a five-person team it is enough.
 
+## Using it
+
+Open the panel, paste code into the first box and the error into the second,
+press *Ask for a hint*, then answer the tutor's question in the reply box.
+`Enter` sends, `Shift+Enter` makes a new line.
+
 To see the guardrail fire, type `/leak` as a reply — the mock backend will
 deliberately hand over a full solution, and the filter will intercept it.
+
+Note that the mock backend is canned: it replies with the same four sentences
+in the same order regardless of what you paste. Replies start responding to
+your actual code once a model is connected.
 
 ### Commands
 

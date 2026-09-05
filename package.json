@@ -6,6 +6,10 @@
   "publisher": "sic-ai-capstone",
   "private": true,
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/H7Feez/elenchus_poc.git"
+  },
   "engines": {
     "vscode": "^1.85.0"
   },

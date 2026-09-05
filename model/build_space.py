@@ -120,7 +120,7 @@ def main():
             item.unlink(missing_ok=True)
 
     # The server and everything it imports at runtime.
-    for name in ("serve.py", "guardrail_py.py", "compact_prompt.txt"):
+    for name in ("serve.py", "guardrail_py.py", "compact_prompt.txt", "compact_prompt_strong.txt"):
         shutil.copy2(HERE / name, OUT / name)
     ignore = shutil.ignore_patterns("__pycache__", "*.pyc")
     shutil.copytree(HERE / "web", OUT / "web", ignore=ignore)

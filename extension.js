@@ -4,10 +4,10 @@ const vscode = require('vscode');
 const fs = require('fs');
 const path = require('path');
 
-const { getReply, NEEDS_KEY } = require('./providers');
+const { getReply, NEEDS_KEY, listLocalModels } = require('./providers');
 const promptLib = require('./prompt');
 const guardrail = require('./guardrail');
-const { parseReply, sliceRange } = require('./parse');
+const { parseReply, sliceRange, mineLines, fixProblems } = require('./parse');
 
 const SECRET_KEY = 'socraticTutor.apiKey';
 const LAST_MODE_KEY = 'socraticTutor.lastMode';
@@ -19,7 +19,7 @@ const HISTORY_LIMIT = 10;
  * the honest version of "limited context": a free-tier model on a long
  * back-and-forth would otherwise degrade or fail outright.
  */
-const THREAD_TAIL = 8;
+const THREAD_TAIL = 6;
 
 /**
  * The decoration used to point at lines in the editor.
@@ -56,6 +56,8 @@ function newSession() {
       guardrailBlocked: 0,
       repliesWithoutQuestion: 0,
       fixesApplied: 0,
+      fixesRejected: 0,
+      routed: { groq: 0, helper: 0, downgraded: 0 },
       reasons: []
     }
   };
@@ -429,6 +431,86 @@ async function switchBackend(context) {
 // Asking the model
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Routing by capability
+// ---------------------------------------------------------------------------
+
+const FINE_TUNED_MODEL = 'elenchus';
+const HELPER_MODEL = 'elenchus-helper';
+
+function isFineTuned(model) {
+  return !model || model === FINE_TUNED_MODEL;
+}
+
+/**
+ * Follow-ups that ask for an explanation rather than offer an answer. The
+ * fine-tuned model learned from tutors who almost never explain, only ask, so
+ * it answers "what does split() do?" with "what does counts.get() do?". A
+ * model that can explain should take those turns.
+ */
+const CONCEPT_RE =
+  /\b(what (is|are|does|do|did|would|will)|what'?s|how (does|do|is|are|did)|why (does|do|is|are|did)|explain|mean(s|ing)?\b|i (don'?t|do not|dont) (understand|get|follow|see)|confus|not sure (what|how|why))/i;
+
+function looksLikeConceptQuestion(text) {
+  return CONCEPT_RE.test(String(text || ''));
+}
+
+/**
+ * The small fine-tuned model is genuinely good at one thing: Socratic
+ * questioning in Hint mode. It cannot emit the line markers Strong hint
+ * needs, cannot produce a fix, and deflects concept questions. Rather than
+ * let those requests silently degrade, send them to something that can:
+ * Groq when a key is stored, else the server's larger untrained helper
+ * model, else run as Hint and say so on the reply.
+ */
+async function chooseRoute(context, s, opts, req) {
+  const asIs = {
+    opts,
+    prompt: systemPromptFor(s.mode, opts.provider, opts.model),
+    mode: s.mode,
+    via: null
+  };
+
+  const routing = vscode.workspace.getConfiguration('socraticTutor').get('helperRouting');
+  const smallLocal = opts.provider === 'local' && isFineTuned(opts.model);
+  if (!routing || !smallLocal) return asIs;
+
+  const needsHelp =
+    s.mode !== 'hint' || (!req.firstTurn && looksLikeConceptQuestion(req.context));
+  if (!needsHelp) return asIs;
+
+  const apiKey = await context.secrets.get(SECRET_KEY);
+  if (apiKey) {
+    const groq = BACKENDS.find((b) => b.id === 'groq').settings;
+    return {
+      opts: { ...opts, provider: groq.provider, baseUrl: groq.baseUrl, model: groq.model, apiKey },
+      prompt: promptLib.buildSystemPrompt(s.mode),
+      mode: s.mode,
+      via: 'groq'
+    };
+  }
+
+  const available = await listLocalModels(opts);
+  if (available.has(HELPER_MODEL)) {
+    return {
+      opts: { ...opts, model: HELPER_MODEL },
+      prompt: promptLib.buildSystemPrompt(s.mode),
+      mode: s.mode,
+      via: 'helper'
+    };
+  }
+
+  // Nowhere to send it. A concept question can still go to the small model;
+  // a mode it cannot do becomes Hint, labelled as such.
+  if (s.mode === 'hint') return asIs;
+  return {
+    opts,
+    prompt: systemPromptFor('hint', opts.provider, opts.model),
+    mode: 'hint',
+    via: 'downgraded'
+  };
+}
+
 async function run(context, req) {
   const s = session; // so a Clear History mid-request cannot leak into the new one
   const cfg = vscode.workspace.getConfiguration('socraticTutor');
@@ -452,7 +534,9 @@ async function run(context, req) {
     question: req.context || '',
     response: null,
     flag: null,
-    fix: null
+    via: null,
+    fix: null,
+    fixRejected: null
   };
   pushHistory(s, entry);
   post({ type: 'entry', entry });
@@ -478,7 +562,14 @@ async function run(context, req) {
 
   post({ type: 'busy', value: true });
   try {
-    const reply = await askWithGuardrail(s, opts);
+    const route = await chooseRoute(context, s, opts, req);
+    entry.via = route.via;
+    if (route.via) {
+      s.stats.routed[route.via] += 1;
+      log('routed ' + s.mode + ' request: ' + route.via);
+    }
+
+    const reply = await askWithGuardrail(s, route);
     if (s !== session) return; // history was cleared while we waited
 
     s.thread.push({ role: 'assistant', content: reply.raw });
@@ -487,8 +578,20 @@ async function run(context, req) {
     entry.flag = reply.flag;
 
     if (reply.fix && reply.range && s.anchor && !s.anchor.stale) {
-      s.lastFix = { range: reply.range, replacement: reply.fix };
-      entry.fix = { range: reply.range, code: reply.fix };
+      const problems = fixProblems(s.anchor.code, reply.range, reply.fix);
+      if (problems.length) {
+        s.stats.fixesRejected += 1;
+        entry.fixRejected = problems;
+        log('fix rejected: ' + problems.join('; '));
+        if (!entry.response || entry.response === "Here's the fix.") {
+          entry.response =
+            'The model offered a fix that did not hold up: ' + problems[0] +
+            '. Ask again, or switch to a larger model.';
+        }
+      } else {
+        s.lastFix = { range: reply.range, replacement: reply.fix };
+        entry.fix = { range: reply.range, code: reply.fix };
+      }
     }
 
     if (reply.range && s.anchor && !s.anchor.stale) {
@@ -538,23 +641,28 @@ function highlightModelRange(range) {
   applyHighlight(session.anchor.uri, docRange);
 }
 
-async function askWithGuardrail(s, opts) {
+async function askWithGuardrail(s, route) {
   const cfg = vscode.workspace.getConfiguration('socraticTutor');
-  const enabled = cfg.get('guardrailEnabled') && promptLib.guardrailApplies(s.mode);
+  const mode = route.mode;
+  const opts = route.opts;
+  const enabled = cfg.get('guardrailEnabled') && promptLib.guardrailApplies(mode);
+  const mayHighlight = promptLib.highlightApplies(mode);
 
-  const base = [{ role: 'system', content: systemPromptFor(s.mode, opts.provider) }]
-    .concat(s.thread);
+  // When the marker is missing, a "look at line 4" in the prose is the next
+  // best thing. Hint mode still never highlights: that is enforced by mode.
+  const rangeOf = (p) => (mayHighlight ? p.range || mineLines(p.prose) : null);
+
+  const base = [{ role: 'system', content: route.prompt }].concat(s.thread);
 
   const first = await getReply(base, opts);
   const parsedFirst = parseReply(first);
-  const mayHighlight = promptLib.highlightApplies(s.mode);
 
   if (!enabled) {
     return {
       raw: first,
       // A reply that is nothing but a fix block still needs a sentence in front.
       text: parsedFirst.prose || (parsedFirst.fix ? "Here's the fix." : first),
-      range: mayHighlight ? parsedFirst.range : null,
+      range: rangeOf(parsedFirst),
       fix: parsedFirst.fix,
       flag: null
     };
@@ -566,15 +674,15 @@ async function askWithGuardrail(s, opts) {
     return {
       raw: first,
       text: parsedFirst.prose,
-      range: mayHighlight ? parsedFirst.range : null,
+      range: rangeOf(parsedFirst),
       fix: null,
       flag: null
     };
   }
 
   s.stats.guardrailFired += 1;
-  s.stats.reasons.push.apply(s.stats.reasons, check.reasons.map((r) => s.mode + ': ' + r));
-  log('guardrail fired (' + s.mode + '): ' + check.reasons.join('; '));
+  s.stats.reasons.push.apply(s.stats.reasons, check.reasons.map((r) => mode + ': ' + r));
+  log('guardrail fired (' + mode + '): ' + check.reasons.join('; '));
 
   const second = await getReply(
     base.concat([
@@ -590,7 +698,7 @@ async function askWithGuardrail(s, opts) {
     return {
       raw: second,
       text: parsedSecond.prose,
-      range: mayHighlight ? parsedSecond.range : null,
+      range: rangeOf(parsedSecond),
       fix: null,
       flag: 'rewritten'
     };
@@ -599,9 +707,9 @@ async function askWithGuardrail(s, opts) {
   s.stats.guardrailBlocked += 1;
   s.stats.reasons.push.apply(
     s.stats.reasons,
-    recheck.reasons.map((r) => s.mode + ' on rewrite: ' + r)
+    recheck.reasons.map((r) => mode + ' on rewrite: ' + r)
   );
-  log('guardrail blocked after rewrite (' + s.mode + '): ' + recheck.reasons.join('; '));
+  log('guardrail blocked after rewrite (' + mode + '): ' + recheck.reasons.join('; '));
   return {
     raw: promptLib.BLOCKED_MESSAGE,
     text: promptLib.BLOCKED_MESSAGE,
@@ -614,24 +722,32 @@ async function askWithGuardrail(s, opts) {
 /**
  * The long prompt in prompt.js is for models that were never trained on this
  * task — it has to carry the whole behaviour. The team's fine-tuned model was
- * trained WITH the short prompt in model/compact_prompt.txt, so that is what it
- * gets: the behaviour is in its weights now, and a prompt it never saw in
- * training would only confuse a 0.5B model. One file, read by both training
- * and serving, so the two can never drift apart.
+ * trained WITH the short prompts in model/compact_prompt*.txt, so those are
+ * what it gets: the behaviour is in its weights now, and a prompt it never saw
+ * in training would only confuse a 0.5B model. The same files feed training,
+ * so the two cannot drift apart.
+ *
+ * Only the fine-tuned model gets a compact prompt. The untrained base and the
+ * helper model have no training to lean on, so they get the full one.
  */
-let compactPromptCache = null;
-function systemPromptFor(mode, provider) {
-  if (provider !== 'local') return promptLib.buildSystemPrompt(mode);
-  if (compactPromptCache === null) {
+const compactPromptCache = new Map();
+function compactPrompt(file) {
+  if (!compactPromptCache.has(file)) {
+    let text = null;
     try {
-      compactPromptCache = fs
-        .readFileSync(path.join(extensionContext.extensionPath, 'model', 'compact_prompt.txt'), 'utf8')
-        .trim();
+      text = fs.readFileSync(path.join(extensionContext.extensionPath, 'model', file), 'utf8').trim() || null;
     } catch (_e) {
-      compactPromptCache = promptLib.buildSystemPrompt(mode);
+      text = null;
     }
+    compactPromptCache.set(file, text);
   }
-  return compactPromptCache;
+  return compactPromptCache.get(file);
+}
+
+function systemPromptFor(mode, provider, model) {
+  if (provider !== 'local' || !isFineTuned(model)) return promptLib.buildSystemPrompt(mode);
+  const file = mode === 'strong' ? 'compact_prompt_strong.txt' : 'compact_prompt.txt';
+  return compactPrompt(file) || promptLib.buildSystemPrompt(mode);
 }
 
 function pushHistory(s, entry) {
@@ -972,6 +1088,10 @@ function showStats() {
     'Blocked after rewrite:    ' + s.guardrailBlocked,
     'Replies with no question: ' + s.repliesWithoutQuestion,
     'Fixes applied to editor:  ' + s.fixesApplied,
+    'Fixes rejected as bad:    ' + s.fixesRejected,
+    'Routed to Groq:           ' + s.routed.groq,
+    'Routed to helper model:   ' + s.routed.helper,
+    'Downgraded to Hint:       ' + s.routed.downgraded,
     '',
     'Reasons:'
   ].concat(s.reasons.length ? s.reasons.map((r) => '  - ' + r) : ['  (none)']);
@@ -992,4 +1112,4 @@ function log(text) {
   channel().appendLine('[' + new Date().toISOString() + '] ' + text);
 }
 
-module.exports = { activate, deactivate, trimThread, BACKENDS };
+module.exports = { activate, deactivate, trimThread, BACKENDS, looksLikeConceptQuestion, THREAD_TAIL, chooseRoute, systemPromptFor };

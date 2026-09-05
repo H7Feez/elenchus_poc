@@ -2,7 +2,7 @@
   "name": "socratic-tutor-poc",
   "displayName": "Socratic Tutor (PoC)",
   "description": "A debugging tutor that answers with questions and hints instead of solutions.",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "publisher": "sic-ai-capstone",
   "license": "MIT",
   "repository": {
@@ -120,6 +120,11 @@
           "type": "boolean",
           "default": true,
           "description": "Block replies that contain a full solution and ask the model to rewrite them as a hint. Never applies in Direct answer mode, which exists to hand over the fix."
+        },
+        "socraticTutor.helperRouting": {
+          "type": "boolean",
+          "default": true,
+          "description": "When the team's small fine-tuned model is selected, send Strong hint, Direct answer and concept questions to a model that can handle them: Groq if an API key is stored, otherwise the server's larger helper model if one is loaded. If neither exists the request runs as Hint and the reply says so. Turn off once the small model has been trained for those modes."
         },
         "socraticTutor.typewriter": {
           "type": "boolean",

@@ -66,6 +66,19 @@ It is a **supervised fine-tune**: it has learned to imitate the benchmark's
 tutors. It is trained for Hint mode only — the benchmark has no line markers,
 so Strong hint and Direct answer will still behave like Hint on this model.
 
+It is trained for Hint mode. `prepare_data.py` now also emits Strong-hint
+examples with `LINES:` markers mined from the experts' own "look at line 11"
+phrasing, and shows the problem statement on only half the opening turns
+(the first run showed it on all of them, and the served model, which never
+gets one, started inventing tasks). **The next training run picks both up;
+the current adapter predates them.**
+
+Until then, `serve.py --helper Qwen/Qwen2.5-Coder-1.5B-Instruct` loads a
+larger untrained model as `elenchus-helper`, and the extension sends Strong
+hint, Direct answer and concept questions there when no Groq key is stored.
+Whether that helper follows the marker and fix contracts well enough is
+unverified: `compare.py`-style measurement is the next step.
+
 It is **not** the RLHF/DPO method from the ACE-RLHF paper. That is the next
 step, and it needs this one first: DPO trains on pairs of a better and a worse
 reply for the same context, and the guardrail is a ready-made way to label the

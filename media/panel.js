@@ -238,13 +238,29 @@
     if (entry.flag === 'error') resp.classList.add('failed');
 
     type(target, entry.response || '', instant, function () {
-      if (entry.flag && entry.flag !== 'error' && !resp.querySelector('.flag')) {
-        var badge = document.createElement('span');
-        badge.className = 'flag ' + entry.flag;
-        badge.textContent =
-          entry.flag === 'rewritten' ? 'guardrail: rewritten' : 'guardrail: blocked';
-        resp.appendChild(badge);
+      if (resp.querySelector('.flag')) { scrollToEnd(); return; }
+
+      function badge(cls, text) {
+        var b = document.createElement('span');
+        b.className = 'flag ' + cls;
+        b.textContent = text;
+        resp.appendChild(b);
       }
+
+      if (entry.flag && entry.flag !== 'error') {
+        badge(entry.flag, entry.flag === 'rewritten' ? 'guardrail: rewritten' : 'guardrail: blocked');
+      }
+      // Where the reply actually came from, when it was not the model you
+      // picked. Honest labelling beats a silent downgrade.
+      if (entry.via === 'groq') badge('via', 'answered by Groq');
+      if (entry.via === 'helper') badge('via', 'answered by the helper model');
+      if (entry.via === 'downgraded') {
+        badge('downgraded', 'ran as Hint: this model cannot do ' + entry.modeLabel);
+      }
+      if (entry.fixRejected && entry.fixRejected.length) {
+        badge('rejected', 'fix withheld: ' + entry.fixRejected[0]);
+      }
+
       if (entry.fix && !article.querySelector('.fixcard')) renderFix(article, entry.fix);
       scrollToEnd();
     });

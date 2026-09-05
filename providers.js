@@ -305,6 +305,37 @@ function preview(value) {
   return s.length > 300 ? s.slice(0, 300) + '…' : s;
 }
 
+/**
+ * Which model names the local server currently offers. Lets the extension
+ * find out whether a larger helper model is loaded without anyone configuring
+ * it. Cached briefly; a server restart with different models is picked up
+ * within five minutes.
+ */
+const modelListCache = new Map();
+const MODEL_LIST_TTL_MS = 5 * 60 * 1000;
+
+async function listLocalModels(opts) {
+  const base =
+    (opts.baseUrl && String(opts.baseUrl).trim().replace(/\/+$/, '')) ||
+    (await endpoint.resolve(opts.endpointUrl, opts.log)) ||
+    'http://127.0.0.1:8008/v1';
+  const hit = modelListCache.get(base);
+  if (hit && Date.now() - hit.at < MODEL_LIST_TTL_MS) return hit.models;
+
+  try {
+    const res = await fetch(base + '/models', {
+      headers: { 'ngrok-skip-browser-warning': 'true' },
+      signal: AbortSignal.timeout(8000)
+    });
+    const json = await res.json();
+    const models = new Set((json && json.data ? json.data : []).map((m) => m.id));
+    modelListCache.set(base, { at: Date.now(), models });
+    return models;
+  } catch (_e) {
+    return new Set();
+  }
+}
+
 const ADAPTERS = {
   mock: mockAdapter,
   openaiCompatible: openAiCompatibleAdapter,
@@ -315,4 +346,4 @@ const ADAPTERS = {
 /** Providers that need a key before they can be called. */
 const NEEDS_KEY = new Set(['openaiCompatible']);
 
-module.exports = { getReply, NEEDS_KEY };
+module.exports = { getReply, NEEDS_KEY, listLocalModels };

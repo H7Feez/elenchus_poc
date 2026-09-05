@@ -46,8 +46,8 @@ Nobody needs Node.js locally for this: pushing a version tag makes GitHub
 Actions build the `.vsix` and attach it to the Release.
 
 ```powershell
-git tag v0.0.7
-git push origin v0.0.7
+git tag v0.0.8
+git push origin v0.0.8
 ```
 
 Download `socratic-tutor-poc.vsix` from the Release page, then either drag it
@@ -65,7 +65,7 @@ If you would rather not wait on CI, install Node.js once and build it yourself:
 
 ```powershell
 npx @vscode/vsce package
-code --install-extension socratic-tutor-poc-0.0.7.vsix
+code --install-extension socratic-tutor-poc-0.0.8.vsix
 ```
 
 ### About automatic updates
@@ -110,6 +110,30 @@ restarts.
 Direct answer contradicts the project's own thesis on purpose: it gives the
 evaluation a control condition. Running one bug through all three modes is the
 clearest way to show what the Socratic constraint costs and buys.
+
+### One small model, and where it needs help
+
+The team's fine-tuned model is 0.5B parameters and trained on Hint-mode
+dialogues. It is genuinely good at that one thing and cannot do three others:
+emit the line markers Strong hint needs, produce a fix, or explain a concept
+(it was trained on tutors who only ever ask). Rather than let those requests
+silently degrade, the extension routes them:
+
+1. **Groq**, if an API key is stored (*Set API Key*). Proven on all three.
+2. **The server's helper model**, a larger untrained Qwen loaded alongside the
+   small one with `serve.py --helper ...`. Free and keyless. Its quality on
+   these tasks has **not been measured yet**; the reply badge tells you when it
+   answered so you can judge.
+3. **Neither available:** the request runs as Hint and the reply says so.
+
+Every routed reply carries a badge: *answered by Groq*, *answered by the helper
+model*, or *ran as Hint*. Turn routing off with `socraticTutor.helperRouting`
+once the small model has been retrained for those modes.
+
+When a reply names a line ("have a look at line 4") but carries no marker, the
+line is highlighted anyway. And a suggested fix is withheld, with the reason
+shown, when it is identical to the original lines, empty, or built from names
+that appear in the prompt's worked example rather than in your code.
 
 ### Talking to it
 

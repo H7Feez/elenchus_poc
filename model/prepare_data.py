@@ -21,6 +21,7 @@ Runs on the plain standard library — no torch, no transformers needed here.
 
 import json
 import os
+import random
 import re
 import sys
 from pathlib import Path
@@ -34,6 +35,35 @@ OUT = HERE / "data"
 # weights, not in a 900-token instruction. The extension reads the same file
 # when it talks to the local model, so training and serving always agree.
 SYSTEM_PROMPT = (HERE / "compact_prompt.txt").read_text(encoding="utf-8").strip()
+SYSTEM_PROMPT_STRONG = (HERE / "compact_prompt_strong.txt").read_text(encoding="utf-8").strip()
+
+# The first training run appended the benchmark's problem statement to EVERY
+# opening turn. The extension never sends one, so at serving time the model met
+# a shape it had never seen and started inventing tasks ("how many times does
+# 'hello' appear?"). Now it sees the statement on roughly half the examples and
+# learns to cope either way. Seeded, so the split is reproducible.
+TASK_STATEMENT_PROBABILITY = 0.5
+random.seed(1337)
+
+# Tutors in the benchmark say "look at line 11" constantly. When the expert's
+# own reply names a line, a second copy of that example is emitted under the
+# Strong-hint prompt with a matching "LINES: 11" marker appended. That is the
+# training signal Strong hint mode needs, mined from what the expert already
+# said rather than invented.
+LINE_MENTION = re.compile(
+    r"\blines?\s+(\d{1,4})(?:\s*(?:-|–|—|to|through|and)\s*(\d{1,4}))?\b", re.I
+)
+
+
+def mined_marker(text):
+    m = LINE_MENTION.search(text or "")
+    if not m:
+        return None
+    start = int(m.group(1))
+    end = int(m.group(2)) if m.group(2) else start
+    if start < 1 or end < start:
+        return None
+    return f"LINES: {start}" if start == end else f"LINES: {start}-{end}"
 
 # How much of a long conversation the model sees: the opening turn (which
 # carries the code) plus this many of the most recent turns. Same idea as the
@@ -141,7 +171,7 @@ def dialogue_to_examples(file_text):
     # Rebuild the conversation as chat messages.
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     first_question = turns[0]["text"]
-    if problem:
+    if problem and random.random() < TASK_STATEMENT_PROBABILITY:
         first_question += "\n\nThe task I'm trying to solve: " + problem[:MAX_PROBLEM_CHARS]
     messages.append({"role": "user", "content": build_first_turn(bug_code, first_question)})
 
@@ -154,6 +184,16 @@ def dialogue_to_examples(file_text):
             for target in targets:
                 if target:
                     examples.append({"messages": context + [{"role": "assistant", "content": target}]})
+            # Strong-hint variant: same context under the strong prompt, with the
+            # line the expert named appended as a marker. Main text only, so the
+            # alternatives do not multiply it.
+            marker = mined_marker(t["text"])
+            if marker:
+                strong_context = [{"role": "system", "content": SYSTEM_PROMPT_STRONG}] + context[1:]
+                examples.append({
+                    "messages": strong_context + [{"role": "assistant", "content": t["text"] + "\n\n" + marker}],
+                    "variant": "strong",
+                })
             messages.append({"role": "assistant", "content": t["text"]})
         else:
             content = t["text"]
@@ -181,17 +221,21 @@ def trim(messages):
 def convert(split_dir, out_path):
     files = sorted(Path(split_dir).glob("*.txt"))
     n_examples = 0
+    n_strong = 0
     lengths = []
     with open(out_path, "w", encoding="utf-8") as f:
         for fp in files:
             for ex in dialogue_to_examples(fp.read_text(encoding="utf-8")):
                 f.write(json.dumps(ex, ensure_ascii=False) + "\n")
                 n_examples += 1
+                if ex.get("variant") == "strong":
+                    n_strong += 1
                 lengths.append(sum(len(m["content"]) for m in ex["messages"]))
     lengths.sort()
     return {
         "files": len(files),
         "examples": n_examples,
+        "strong": n_strong,
         "chars_avg": int(sum(lengths) / max(1, len(lengths))),
         "chars_p90": lengths[int(len(lengths) * 0.9)] if lengths else 0,
         "chars_max": lengths[-1] if lengths else 0,
@@ -204,6 +248,7 @@ if __name__ == "__main__":
     OUT.mkdir(parents=True, exist_ok=True)
     for split, name in (("train", "train"), ("testset", "test")):
         stats = convert(DATA / split, OUT / f"{name}.jsonl")
-        print(f"{name}: {stats['files']} dialogues -> {stats['examples']} examples | "
+        print(f"{name}: {stats['files']} dialogues -> {stats['examples']} examples "
+              f"({stats['strong']} strong-hint variants with mined LINES markers) | "
               f"chars avg {stats['chars_avg']}, p90 {stats['chars_p90']}, max {stats['chars_max']}")
     print(f"written to {OUT}")

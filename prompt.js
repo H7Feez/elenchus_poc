@@ -145,7 +145,9 @@ Reply with, in this order:
 3. The replacement text for exactly those lines, introduced by FIX: on its own
    line and then a fenced code block.
 
-Format the last two parts exactly like this:
+Format the last two parts exactly like this. This example is about a
+DIFFERENT program than the student's — it shows the layout only. Never copy
+its variable names or its code; write the fix for the student's own lines.
 
 LINES: 2-4
 FIX:

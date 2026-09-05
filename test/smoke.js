@@ -96,6 +96,41 @@ check('only the hosted preset demands a key', BACKENDS
   .filter((b) => b.needsKey).every((b) => b.settings.provider === 'openaiCompatible'));
 check('preset ids are unique', new Set(BACKENDS.map((b) => b.id)).size === BACKENDS.length);
 
+// --- context window matches what the model was trained with ---
+const { THREAD_TAIL, looksLikeConceptQuestion } = require(path + 'extension.js');
+check('serving keeps the same recent-turn window as training (6)', THREAD_TAIL === 6);
+
+// --- concept-question detection: what gets routed away from the small model ---
+[
+  'what does counts[word] do?', "what's a KeyError", 'how does split() work',
+  'why is it 10 and not 25', 'I dont understand what you mean', "I don't get it",
+  'can you explain that', 'im confused', 'not sure what you mean'
+].forEach((t) => check('concept question: ' + JSON.stringify(t), looksLikeConceptQuestion(t)));
+[
+  'is it because the dictionary is empty at first?', 'I think line 3 resets total',
+  'thanks, that helped', 'ok let me try that', 'yes it prints 10'
+].forEach((t) => check('not a concept question: ' + JSON.stringify(t), !looksLikeConceptQuestion(t)));
+
+// --- mining a highlight from prose when the marker is missing ---
+check('mines "line 4"', JSON.stringify(parse.mineLines('Have a look at line 4. What happens?')) === '{"start":4,"end":4}');
+check('mines "lines 3-5"', JSON.stringify(parse.mineLines('lines 3-5 run every pass')) === '{"start":3,"end":5}');
+check('mines "lines 2 to 4"', JSON.stringify(parse.mineLines('Compare lines 2 to 4.')) === '{"start":2,"end":4}');
+check('mines "lines 2 and 4" as a range', JSON.stringify(parse.mineLines('lines 2 and 4 both matter')) === '{"start":2,"end":4}');
+check('first mention wins', parse.mineLines('line 7, then line 2').start === 7);
+check('no mention means null', parse.mineLines('What does the loop do?') === null);
+check('ignores "online"', parse.mineLines('look online for docs') === null);
+check('rejects a backwards range', parse.mineLines('lines 9-2') === null);
+
+// --- refusing fixes that would embarrass the Apply button ---
+const sel = 'def top_word(text):\n    counts = {}\n    for word in text.split():\n        counts[word] += 1\n    return max(counts, key=counts.get)';
+check('accepts a real fix', parse.fixProblems(sel, { start: 4, end: 4 }, '        counts[word] = counts.get(word, 0) + 1').length === 0);
+check('rejects a fix identical to the original', parse.fixProblems(sel, { start: 2, end: 4 }, '    counts = {}\n    for word in text.split():\n        counts[word] += 1').length > 0);
+check('identical means identical up to whitespace', parse.fixProblems(sel, { start: 4, end: 4 }, 'counts[word] += 1').length > 0);
+check('rejects an empty fix', parse.fixProblems(sel, { start: 4, end: 4 }, '   ').length > 0);
+check('rejects a fix outside the selection', parse.fixProblems(sel, { start: 4, end: 40 }, 'x = 1').length > 0);
+check('rejects names copied from the prompt example', parse.fixProblems(sel, { start: 2, end: 4 }, '    total = 0\n    for n in nums:\n        counts[n] += 1').some((p) => /prompt example/.test(p)));
+check('allows those names when the code already uses them', parse.fixProblems('total = 0\nfor n in nums:\n    total = n', { start: 3, end: 3 }, '    total += n').length === 0);
+
 function fakeThread(n) {
   const t = [{ role: 'user', content: 'CODE' }];
   for (let i = 1; i < n; i++) t.push({ role: i % 2 ? 'assistant' : 'user', content: 't' + i });

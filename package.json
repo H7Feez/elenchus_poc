@@ -4,7 +4,6 @@
   "description": "A debugging tutor that answers with questions and hints instead of solutions.",
   "version": "0.0.1",
   "publisher": "sic-ai-capstone",
-  "private": true,
   "license": "MIT",
   "repository": {
     "type": "git",

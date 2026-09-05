@@ -36,7 +36,10 @@ def load(use_base_only):
             device = "cpu"
 
     tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL)
-    model = AutoModelForCausalLM.from_pretrained(BASE_MODEL, torch_dtype=torch.float32)
+    try:
+        model = AutoModelForCausalLM.from_pretrained(BASE_MODEL, dtype=torch.float32)
+    except TypeError:  # transformers 4.x spelling
+        model = AutoModelForCausalLM.from_pretrained(BASE_MODEL, torch_dtype=torch.float32)
 
     if not use_base_only:
         if not ADAPTER.exists():
@@ -53,10 +56,20 @@ def load(use_base_only):
     print(f"loaded {STATE['name']} on {device}")
 
 
+def chat_ids(tok, messages):
+    """Plain list of ids; transformers 4.x returns a list, 5.x a dict-like."""
+    out = tok.apply_chat_template(messages, add_generation_prompt=True, tokenize=True)
+    if hasattr(out, "keys") or isinstance(out, dict):
+        out = out["input_ids"]
+    if len(out) and isinstance(out[0], (list, tuple)):
+        out = out[0]
+    return [int(t) for t in out]
+
+
 def generate(messages, temperature, max_tokens):
     import torch
     tok, model = STATE["tokenizer"], STATE["model"]
-    ids = tok.apply_chat_template(messages, add_generation_prompt=True, return_tensors="pt").to(STATE["device"])
+    ids = torch.tensor([chat_ids(tok, messages)]).to(STATE["device"])
     with torch.inference_mode():
         out = model.generate(
             ids,

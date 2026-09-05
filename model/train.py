@@ -26,6 +26,8 @@ import sys
 import time
 from pathlib import Path
 
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+
 HERE = Path(__file__).resolve().parent
 DATA = HERE / "data"
 OUT = HERE / "out"
@@ -60,6 +62,31 @@ def load_examples(path, limit=None):
     return rows
 
 
+def chat_ids(tokenizer, messages, add_generation_prompt=False):
+    """
+    Token ids for a chat, as a plain list. transformers 4.x returns a list here
+    and 5.x returns a dict-like object, so accept both.
+    """
+    out = tokenizer.apply_chat_template(
+        messages, add_generation_prompt=add_generation_prompt, tokenize=True
+    )
+    if hasattr(out, "keys") or isinstance(out, dict):
+        out = out["input_ids"]
+    if len(out) and isinstance(out[0], (list, tuple)):
+        out = out[0]
+    return [int(t) for t in out]
+
+
+def load_model(name):
+    """from_pretrained's dtype argument was renamed in transformers 5."""
+    import torch
+    from transformers import AutoModelForCausalLM
+    try:
+        return AutoModelForCausalLM.from_pretrained(name, dtype=torch.float32)
+    except TypeError:
+        return AutoModelForCausalLM.from_pretrained(name, torch_dtype=torch.float32)
+
+
 def tokenize(tokenizer, example):
     """
     Turns one chat example into token ids plus a label for each token.
@@ -69,10 +96,8 @@ def tokenize(tokenizer, example):
     are graded. That is how "train on the reply, not the student" is expressed.
     """
     messages = example["messages"]
-    prompt_ids = tokenizer.apply_chat_template(
-        messages[:-1], add_generation_prompt=True, tokenize=True
-    )
-    full_ids = tokenizer.apply_chat_template(messages, tokenize=True)
+    prompt_ids = chat_ids(tokenizer, messages[:-1], add_generation_prompt=True)
+    full_ids = chat_ids(tokenizer, messages)
     if full_ids[: len(prompt_ids)] != prompt_ids:
         return None  # template did not nest as expected; skip rather than mis-label
     if len(full_ids) > MAX_LEN:
@@ -90,6 +115,54 @@ class ChatDataset:
 
     def __getitem__(self, i):
         return self.rows[i]
+
+
+def make_trainer_class():
+    """
+    A Trainer that asks the model for output scores only where we grade.
+
+    The last layer scores every one of ~152k vocabulary entries at every
+    position. For a 544-token example that table is bigger than the whole
+    model, and we grade only the tutor's ~30 tokens at the end. Since the
+    graded tokens are always a suffix (the tutor's turn is last), we ask for
+    the tail only. That took peak memory from 4.4 GB to well under the card's
+    4 GB. On an older transformers without `logits_to_keep`, it falls back to
+    the normal full computation.
+    """
+    import torch
+    import torch.nn.functional as F
+    from transformers import Trainer
+
+    class TailLossTrainer(Trainer):
+        def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+            labels = inputs["labels"]
+            input_ids = inputs["input_ids"]
+            attention_mask = inputs["attention_mask"]
+            graded = labels != -100
+            length = labels.shape[1]
+            k = int(graded[0].sum().item())
+            suffix = (
+                labels.shape[0] == 1 and k > 0
+                and bool(graded[0, length - k:].all())
+                and not bool(graded[0, :length - k].any())
+            )
+            if suffix:
+                try:
+                    out = model(input_ids=input_ids, attention_mask=attention_mask, logits_to_keep=k + 1)
+                    # Position p predicts token p+1: the last k+1 scores, minus the
+                    # final one, line up with the k graded tokens.
+                    logits = out.logits[:, :-1, :].float()
+                    target = labels[:, length - k:]
+                    loss = F.cross_entropy(
+                        logits.reshape(-1, logits.size(-1)), target.reshape(-1), ignore_index=-100
+                    )
+                    return (loss, out) if return_outputs else loss
+                except TypeError:
+                    pass
+            out = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+            return (out.loss, out) if return_outputs else out.loss
+
+    return TailLossTrainer
 
 
 def make_collator(pad_id):
@@ -114,23 +187,26 @@ def make_collator(pad_id):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--limit", type=int, default=None, help="use only this many examples")
+    ap.add_argument("--limit", type=int, default=None,
+                    help="use only this many examples (default 800 on GPU, 400 on CPU; 0 = all)")
     ap.add_argument("--epochs", type=float, default=1.0)
     ap.add_argument("--lr", type=float, default=2e-4)
     args = ap.parse_args()
 
     import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments
+    from transformers import AutoTokenizer, TrainingArguments
     from peft import LoraConfig, get_peft_model
 
     device = pick_device()
-    if device == "cpu" and args.limit is None:
-        args.limit = 400
-        print("CPU run: defaulting to --limit 400 so it finishes in reasonable time")
+    if args.limit is None:
+        args.limit = 800 if device == "cuda" else 400
+        print(f"using --limit {args.limit} (pass --limit 0 for all examples)")
+    elif args.limit == 0:
+        args.limit = None
 
     print(f"loading {BASE_MODEL} (first time downloads ~1 GB) ...")
     tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL)
-    model = AutoModelForCausalLM.from_pretrained(BASE_MODEL, torch_dtype=torch.float32)
+    model = load_model(BASE_MODEL)
     model.to(device)
 
     # LoRA: instead of changing the 500M existing weights, we bolt a small
@@ -149,9 +225,12 @@ def main():
 
     # Recompute activations during the backward pass instead of storing them.
     # Slower per step, much less memory — the trade that makes 4 GB enough.
-    model.gradient_checkpointing_enable()
+    # Only active in training mode, which Trainer sets; made explicit here so
+    # a quick probe outside Trainer measures the real thing.
+    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     model.enable_input_require_grads()
     model.config.use_cache = False
+    model.train()
 
     raw = load_examples(DATA / "train.jsonl", args.limit)
     rows = [t for t in (tokenize(tokenizer, r) for r in raw) if t]
@@ -176,7 +255,7 @@ def main():
         remove_unused_columns=False,
     )
 
-    trainer = Trainer(
+    trainer = make_trainer_class()(
         model=model,
         args=targs,
         train_dataset=ChatDataset(rows),
@@ -196,7 +275,9 @@ def main():
     # A quick taste, on a held-out example the model never saw in training.
     test = load_examples(DATA / "test.jsonl", 1)[0]["messages"][:-1]
     model.eval()
-    ids = tokenizer.apply_chat_template(test, add_generation_prompt=True, return_tensors="pt").to(device)
+    model.gradient_checkpointing_disable()
+    model.config.use_cache = True  # generation is many times faster with the cache
+    ids = torch.tensor([chat_ids(tokenizer, test, add_generation_prompt=True)]).to(device)
     with torch.inference_mode():
         out = model.generate(ids, max_new_tokens=120, do_sample=True, temperature=0.6, top_p=0.9)
     print("\n--- sample reply on an unseen test dialogue ---")

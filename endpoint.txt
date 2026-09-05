@@ -8,3 +8,5 @@
 # Lines starting with # are ignored.
 #
 # Not running at the moment.
+
+https://accept-rays-races-assumes.trycloudflare.com/v1

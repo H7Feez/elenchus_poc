@@ -34,53 +34,49 @@ You do **not** need Node.js. VS Code runs extensions in its own bundled runtime.
 Changes to the code need only `Ctrl+R` in that second window. This is the right
 mode for anyone editing the prompt or the guardrail.
 
-### Installing from GitHub — clone straight into the extensions folder
+### Installing it globally — build a .vsix
 
-**This is the one to use.** VS Code loads any folder inside its extensions
-directory, so cloning there installs the extension, and `git pull` updates it.
+VS Code keeps a registry of installed extensions in
+`%USERPROFILE%\.vscode\extensions\extensions.json` and loads what that file
+lists. Copying or cloning a folder into that directory does **not** install
+anything on current versions — the folder is simply ignored. A global install
+needs a packaged `.vsix`.
 
-Clone it once:
-
-```powershell
-git clone https://github.com/H7Feez/elenchus_poc.git "$env:USERPROFILE\.vscode\extensions\elenchus_poc"
-```
-
-Restart VS Code. The commands appear in every window from then on.
-
-To update, pull and reload:
-
-```powershell
-git -C "$env:USERPROFILE\.vscode\extensions\elenchus_poc" pull
-```
-
-Then `Ctrl+Shift+P` → *Developer: Reload Window*. To uninstall, delete the
-folder and restart.
-
-Works with a private repository, as long as whoever clones has access to it.
-
-### Installing from a .vsix file
-
-For anyone who would rather not clone. Every version tag builds a `.vsix` on
-GitHub Actions and attaches it to the Release — download it, then
-`Ctrl+Shift+P` → *Extensions: Install from VSIX*.
-
-Cutting a release:
+Nobody needs Node.js locally for this: pushing a version tag makes GitHub
+Actions build the `.vsix` and attach it to the Release.
 
 ```powershell
 git tag v0.0.2
 git push origin v0.0.2
 ```
 
-A `.vsix` does **not** update itself. Installing a new version means
-downloading and installing again, which is why the clone method above is the
-better default for this team.
+Download `socratic-tutor-poc.vsix` from the Release page, then either drag it
+onto the Extensions panel, or:
+
+```powershell
+code --install-extension "$env:USERPROFILE\Downloads\socratic-tutor-poc.vsix"
+```
+
+Restart VS Code. To update, bump `version` in `package.json`, tag again, and
+install the new `.vsix` over the old one. To uninstall, use the Extensions
+panel like any other extension.
+
+If you would rather not wait on CI, install Node.js once and build it yourself:
+
+```powershell
+npx @vscode/vsce package
+code --install-extension socratic-tutor-poc-0.0.1.vsix
+```
 
 ### About automatic updates
 
 There is no way to make VS Code auto-update an extension that lives on GitHub.
 Silent background updates only happen for extensions published to the VS Code
-Marketplace, which needs a publisher account and a public listing. `git pull`
-is the closest equivalent, and for a five-person team it is enough.
+Marketplace, which needs a publisher account and a public listing. Everything
+else means installing a new `.vsix` by hand.
+
+For anyone actively editing the extension, none of this matters — use `F5`,
+which loads the working copy directly and needs no install at all.
 
 ## Using it
 

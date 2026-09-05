@@ -445,7 +445,7 @@ async function askWithGuardrail(s, opts) {
   const cfg = vscode.workspace.getConfiguration('socraticTutor');
   const enabled = cfg.get('guardrailEnabled') && promptLib.guardrailApplies(s.mode);
 
-  const base = [{ role: 'system', content: promptLib.buildSystemPrompt(s.mode) }]
+  const base = [{ role: 'system', content: systemPromptFor(s.mode, opts.provider) }]
     .concat(s.thread);
 
   const first = await getReply(base, opts);
@@ -512,6 +512,29 @@ async function askWithGuardrail(s, opts) {
     fix: null,
     flag: 'blocked'
   };
+}
+
+/**
+ * The long prompt in prompt.js is for models that were never trained on this
+ * task — it has to carry the whole behaviour. The team's fine-tuned model was
+ * trained WITH the short prompt in model/compact_prompt.txt, so that is what it
+ * gets: the behaviour is in its weights now, and a prompt it never saw in
+ * training would only confuse a 0.5B model. One file, read by both training
+ * and serving, so the two can never drift apart.
+ */
+let compactPromptCache = null;
+function systemPromptFor(mode, provider) {
+  if (provider !== 'local') return promptLib.buildSystemPrompt(mode);
+  if (compactPromptCache === null) {
+    try {
+      compactPromptCache = fs
+        .readFileSync(path.join(extensionContext.extensionPath, 'model', 'compact_prompt.txt'), 'utf8')
+        .trim();
+    } catch (_e) {
+      compactPromptCache = promptLib.buildSystemPrompt(mode);
+    }
+  }
+  return compactPromptCache;
 }
 
 function pushHistory(s, entry) {

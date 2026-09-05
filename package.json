@@ -65,12 +65,14 @@
           "enum": [
             "mock",
             "openaiCompatible",
-            "ollama"
+            "ollama",
+            "local"
           ],
           "enumDescriptions": [
             "Canned offline replies. No API key, no network. Use this to work on the UI and the guardrail.",
             "Any OpenAI-compatible /chat/completions endpoint (Groq, Together, OpenRouter, vLLM, ...). Needs baseUrl, model and an API key.",
-            "Local Ollama server on http://localhost:11434/v1. Needs model, no API key."
+            "Local Ollama server on http://localhost:11434/v1. Needs model, no API key.",
+            "The team's own fine-tuned model, served by model/serve.py on http://127.0.0.1:8008/v1. No key. Uses the compact prompt the model was trained with."
           ],
           "description": "Which backend answers the student."
         },

@@ -153,6 +153,19 @@ async function ollamaAdapter(messages, opts) {
 }
 
 // ---------------------------------------------------------------------------
+// local — the team's own fine-tuned model, served by model/serve.py
+// ---------------------------------------------------------------------------
+
+async function localAdapter(messages, opts) {
+  return openAiCompatibleAdapter(messages, {
+    ...opts,
+    baseUrl: opts.baseUrl || 'http://127.0.0.1:8008/v1',
+    model: opts.model || 'elenchus',
+    apiKey: undefined
+  });
+}
+
+// ---------------------------------------------------------------------------
 // HTTP
 // ---------------------------------------------------------------------------
 
@@ -260,7 +273,8 @@ function preview(value) {
 const ADAPTERS = {
   mock: mockAdapter,
   openaiCompatible: openAiCompatibleAdapter,
-  ollama: ollamaAdapter
+  ollama: ollamaAdapter,
+  local: localAdapter
 };
 
 /** Providers that need a key before they can be called. */

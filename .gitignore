@@ -1,3 +1,9 @@
 node_modules/
 *.vsix
 .DS_Store
+
+# The benchmark dataset has no licence file, so it is fetched, not vendored.
+# Trained weights are large and reproducible from the scripts.
+model/data/
+model/out/
+__pycache__/

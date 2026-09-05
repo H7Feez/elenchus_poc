@@ -259,6 +259,11 @@ check('first turn warns against assuming it runs', (function () {
   check('openaiCompatible demands a model', await providers
     .getReply([], { provider: 'openaiCompatible', baseUrl: 'https://example.invalid/v1' })
     .then(() => false, (e) => /socraticTutor\.model/.test(e.message)));
+  // The local provider needs no key and no settings; with nothing listening on
+  // its port it must fail with the reachability message, not a config one.
+  check('local provider needs no key or settings', await providers
+    .getReply([{ role: 'user', content: 'hi' }], { provider: 'local' })
+    .then(() => false, (e) => /Could not reach http:\/\/127\.0\.0\.1:8008/.test(e.message)));
   check('unreachable host gives a clear error', await providers
     .getReply([{ role: 'user', content: 'hi' }], {
       provider: 'openaiCompatible',

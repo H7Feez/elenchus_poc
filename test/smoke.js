@@ -138,7 +138,14 @@ check('pads numbers to equal width', (function () {
 })());
 check('first turn includes numbered code', prompt.buildFirstTurn('x = 1\n', 'IndexError: nope').indexOf('1 | x = 1') !== -1);
 check('first turn includes error', prompt.buildFirstTurn('x = 1', 'IndexError').indexOf('IndexError') !== -1);
-check('first turn handles no error', prompt.buildFirstTurn('x = 1', '').indexOf('without an error') !== -1);
+// An empty error box means the student did not paste an error, NOT that the
+// code runs. Asserting the latter hands the model a false premise, and it
+// will argue with the code instead of reading it.
+check('first turn does not claim the code runs', (function () {
+  const t = prompt.buildFirstTurn('x = 1', '');
+  return !/runs without an error/i.test(t) && /have not pasted an error/i.test(t);
+})());
+check('first turn warns against assuming it runs', /Do not assume it runs cleanly/.test(prompt.buildFirstTurn('x = 1', '')));
 
 // --- mock provider ---
 (async () => {

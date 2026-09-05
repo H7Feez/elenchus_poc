@@ -208,7 +208,16 @@ function buildFirstTurn(code, errorText) {
   if (errorText && errorText.trim()) {
     parts.push('Here is the error I get:\n\n' + errorText.trim());
   } else {
-    parts.push('It runs without an error but the behaviour is wrong.');
+    // Never assert that the code runs. An empty error box means the student
+    // did not paste an error, which is not the same as there not being one.
+    // Stating it as fact hands the model a false premise, and it will spend
+    // the whole reply trying to reconcile that with code it can see crashes.
+    parts.push(
+      'I have not pasted an error message. That might be because the code runs ' +
+      'and gives the wrong answer, or because I did not copy the error down. ' +
+      'Do not assume it runs cleanly — if you can see that it would fail, treat ' +
+      'that as the problem and work from there.'
+    );
   }
   parts.push('Help me find the problem.');
   return parts.join('\n\n');

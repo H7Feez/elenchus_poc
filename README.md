@@ -46,8 +46,8 @@ Nobody needs Node.js locally for this: pushing a version tag makes GitHub
 Actions build the `.vsix` and attach it to the Release.
 
 ```powershell
-git tag v0.0.9
-git push origin v0.0.9
+git tag v0.0.10
+git push origin v0.0.10
 ```
 
 Download `socratic-tutor-poc.vsix` from the Release page, then either drag it
@@ -65,7 +65,7 @@ If you would rather not wait on CI, install Node.js once and build it yourself:
 
 ```powershell
 npx @vscode/vsce package
-code --install-extension socratic-tutor-poc-0.0.9.vsix
+code --install-extension socratic-tutor-poc-0.0.10.vsix
 ```
 
 ### About automatic updates

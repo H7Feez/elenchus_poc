@@ -131,7 +131,7 @@ async function openAiCompatibleAdapter(messages, opts) {
     max_tokens: opts.mode === 'direct' ? 700 : 300
   };
 
-  const json = await postJson(baseUrl + '/chat/completions', headers, body);
+  const json = await postJson(baseUrl + '/chat/completions', headers, body, 1, opts.__testResponse);
 
   const text =
     json &&
@@ -216,8 +216,14 @@ async function localAdapter(messages, opts) {
  */
 const RETRY_AFTER_MAX_S = 15;
 
-async function postJson(url, headers, body, attempt) {
+async function postJson(url, headers, body, attempt, testResponse) {
   attempt = attempt || 1;
+
+  // Lets the tests exercise the error paths without a server to fail against.
+  if (testResponse) {
+    throw new Error(explainHttpError(testResponse.status, testResponse.body));
+  }
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
@@ -269,7 +275,28 @@ function retryAfterSeconds(response, raw) {
   return m[2] === 'ms' ? n / 1000 : n;
 }
 
+/**
+ * Cloudflare answers for a tunnel whose origin has gone away, and it answers
+ * in HTML. 530 is the tunnel being registered with nothing behind it; the 52x
+ * family is the origin refusing or timing out. For us that means one thing:
+ * whoever hosts the model closed their laptop or their Colab session dropped.
+ * Saying that is worth more than 300 characters of someone else's error page.
+ */
+const TUNNEL_DOWN = new Set([502, 503, 520, 521, 522, 523, 524, 525, 526, 530]);
+
+function looksLikeHtml(raw) {
+  return /^\s*<(!doctype|html)/i.test(String(raw || ''));
+}
+
 function explainHttpError(status, raw) {
+  if (TUNNEL_DOWN.has(status) && looksLikeHtml(raw)) {
+    return (
+      `The tutor is offline (HTTP ${status}). The address it is published at is ` +
+      'still valid, but nothing is answering there: whoever is hosting the model ' +
+      'needs to start it again. Once they have, run "Socratic Tutor: Refresh Endpoint".'
+    );
+  }
+
   const detail = extractProviderMessage(raw);
   switch (status) {
     case 401:
@@ -302,6 +329,12 @@ function extractProviderMessage(raw) {
 function preview(value) {
   const s = typeof value === 'string' ? value : JSON.stringify(value);
   if (!s) return '';
+  // Never paste someone else's error page into the panel.
+  if (looksLikeHtml(s)) {
+    const title = /<title[^>]*>([^<]{1,120})<\/title>/i.exec(s);
+    return title ? 'the server returned a web page: "' + title[1].trim() + '"'
+                 : 'the server returned a web page instead of an answer';
+  }
   return s.length > 300 ? s.slice(0, 300) + '…' : s;
 }
 

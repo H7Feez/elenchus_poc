@@ -320,6 +320,27 @@ check('first turn warns against assuming it runs', (function () {
     .getReply([{ role: 'user', content: 'hi' }], { provider: 'local' })
     .then(() => false, (e) => /Could not reach http:\/\/127\.0\.0\.1:8008/.test(e.message)));
 
+  // A dead tunnel answers in HTML, and students should not be shown it.
+  const CF_530 = '<!doctype html><html lang="en-US"><head><title>notre-x.trycloudflare.com | 530: Origin DNS error</title></head><body>...</body></html>';
+  check('a dead tunnel is explained, not dumped', await providers
+    .getReply([{ role: 'user', content: 'hi' }], {
+      provider: 'openaiCompatible', baseUrl: 'https://example.invalid/v1', model: 'x', apiKey: 'k',
+      __testResponse: { status: 530, body: CF_530 }
+    })
+    .then(() => false, (e) => /offline/.test(e.message) && !/<!doctype/i.test(e.message)));
+  check('the explanation says what to do', await providers
+    .getReply([{ role: 'user', content: 'hi' }], {
+      provider: 'openaiCompatible', baseUrl: 'https://example.invalid/v1', model: 'x', apiKey: 'k',
+      __testResponse: { status: 530, body: CF_530 }
+    })
+    .then(() => false, (e) => /Refresh Endpoint/.test(e.message)));
+  check('a genuine JSON error is still passed through', await providers
+    .getReply([{ role: 'user', content: 'hi' }], {
+      provider: 'openaiCompatible', baseUrl: 'https://example.invalid/v1', model: 'x', apiKey: 'k',
+      __testResponse: { status: 404, body: '{"error":{"message":"model not found"}}' }
+    })
+    .then(() => false, (e) => /model not found/.test(e.message)));
+
   // --- endpoint discovery: reading the team's current address ---
   const endpoint = require(path + 'endpoint.js');
   check('parses a bare URL', endpoint.parse('https://a.trycloudflare.com/v1') === 'https://a.trycloudflare.com/v1');

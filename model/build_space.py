@@ -87,9 +87,17 @@ Free Spaces run on CPU and sleep after inactivity, so the first request after a
 quiet period takes a minute or so to wake up, and replies take several seconds.
 """
 
+# Hugging Face refuses plain files over 10 MB, so anything big goes through
+# Git LFS. tokenizer.json is ~11 MB and would otherwise be rejected on push.
 GITATTRIBUTES = """\
 *.safetensors filter=lfs diff=lfs merge=lfs -text
 *.bin filter=lfs diff=lfs merge=lfs -text
+tokenizer.json filter=lfs diff=lfs merge=lfs -text
+"""
+
+GITIGNORE = """\
+__pycache__/
+*.pyc
 """
 
 
@@ -105,15 +113,17 @@ def main():
     # The server and everything it imports at runtime.
     for name in ("serve.py", "guardrail_py.py", "compact_prompt.txt"):
         shutil.copy2(HERE / name, OUT / name)
-    shutil.copytree(HERE / "web", OUT / "web")
+    ignore = shutil.ignore_patterns("__pycache__", "*.pyc")
+    shutil.copytree(HERE / "web", OUT / "web", ignore=ignore)
 
     # The trained weights. train.py's default output path is what serve.py
     # looks for, so the layout is preserved rather than reconfigured.
-    shutil.copytree(adapter, OUT / "out" / "adapter")
+    shutil.copytree(adapter, OUT / "out" / "adapter", ignore=ignore)
 
     (OUT / "Dockerfile").write_text(DOCKERFILE, encoding="utf-8")
     (OUT / "README.md").write_text(README, encoding="utf-8")
     (OUT / ".gitattributes").write_text(GITATTRIBUTES, encoding="utf-8")
+    (OUT / ".gitignore").write_text(GITIGNORE, encoding="utf-8")
 
     total = sum(f.stat().st_size for f in OUT.rglob("*") if f.is_file())
     print(f"built {OUT}")

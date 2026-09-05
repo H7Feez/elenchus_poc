@@ -165,6 +165,37 @@ def make_trainer_class():
     return TailLossTrainer
 
 
+def test_loss(model, tokenizer, device, rows, label):
+    """
+    Mean loss over held-out examples the model never trains on. Run before
+    and after training: a fall here means the model learned something that
+    generalises; a fall in training loss alone could just be memorisation.
+    """
+    import torch
+    import torch.nn.functional as F
+    model.eval()
+    total, count = 0.0, 0
+    with torch.inference_mode():
+        for r in rows:
+            labels = torch.tensor([r["labels"]], device=device)
+            ids = torch.tensor([r["input_ids"]], device=device)
+            k = int((labels != -100).sum().item())
+            try:
+                out = model(input_ids=ids, logits_to_keep=k + 1)
+                logits = out.logits[:, :-1, :].float()
+                target = labels[:, labels.shape[1] - k:]
+            except TypeError:
+                out = model(input_ids=ids)
+                logits = out.logits[:, :-1, :].float()
+                target = labels[:, 1:]
+            total += F.cross_entropy(logits.reshape(-1, logits.size(-1)), target.reshape(-1), ignore_index=-100).item()
+            count += 1
+    model.train()
+    mean = total / max(1, count)
+    print(f"test loss {label}: {mean:.3f}  (over {count} unseen examples)")
+    return mean
+
+
 def make_collator(pad_id):
     import torch
 
@@ -262,10 +293,16 @@ def main():
         data_collator=make_collator(tokenizer.pad_token_id),
     )
 
+    test_rows = [t for t in (tokenize(tokenizer, r) for r in load_examples(DATA / "test.jsonl")) if t]
+    before = test_loss(model, tokenizer, device, test_rows, "BEFORE training")
+
     print("\ntraining. The number to watch is 'loss' — it should fall over time.\n")
     t0 = time.time()
     trainer.train()
     print(f"\ndone in {(time.time() - t0) / 60:.1f} min")
+
+    after = test_loss(model, tokenizer, device, test_rows, "AFTER training")
+    print(f"test loss went {before:.3f} -> {after:.3f}  ({'better' if after < before else 'NOT better'})")
 
     adapter_dir = OUT / "adapter"
     model.save_pretrained(str(adapter_dir))

@@ -46,8 +46,8 @@ Nobody needs Node.js locally for this: pushing a version tag makes GitHub
 Actions build the `.vsix` and attach it to the Release.
 
 ```powershell
-git tag v0.0.10
-git push origin v0.0.10
+git tag v0.0.11
+git push origin v0.0.11
 ```
 
 Download `socratic-tutor-poc.vsix` from the Release page, then either drag it
@@ -65,7 +65,7 @@ If you would rather not wait on CI, install Node.js once and build it yourself:
 
 ```powershell
 npx @vscode/vsce package
-code --install-extension socratic-tutor-poc-0.0.10.vsix
+code --install-extension socratic-tutor-poc-0.0.11.vsix
 ```
 
 ### About automatic updates
@@ -172,8 +172,15 @@ named `GITHUB_TOKEN`, with Contents: write on this repo), it updates
 prints the address for you to paste.
 
 Either way, **Socratic Tutor: Refresh Endpoint** picks up a new address
-immediately rather than waiting out the cache. Reinstalling is only ever needed
-for a new version of the extension itself.
+immediately. Reinstalling is only ever needed for a new version of the
+extension itself.
+
+The address is read through GitHub's contents API rather than
+`raw.githubusercontent.com`. Raw sits behind a five-minute CDN cache that a
+query string cannot defeat, so a freshly published address stayed invisible and
+Refresh Endpoint had nothing newer to find. Raw is kept as a fallback for when
+the API's unauthenticated rate limit is reached, where staleness is the cost
+instead of a broken connection.
 
 The decoration is deliberately the least assertive thing it could be: a
 translucent background, no gutter mark, and none of the inline `before`/`after`

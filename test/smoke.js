@@ -346,6 +346,22 @@ check('first turn warns against assuming it runs', (function () {
   check('parses a bare URL', endpoint.parse('https://a.trycloudflare.com/v1') === 'https://a.trycloudflare.com/v1');
   check('ignores comments and blanks', endpoint.parse('# note\n\nhttps://b.example.com\n') === 'https://b.example.com');
   check('parses JSON form', endpoint.parse('{"baseUrl": "https://c.example.com/v1"}') === 'https://c.example.com/v1');
+// GitHub's contents API wraps the file base64 in JSON. Reading it that way
+// avoids raw.githubusercontent's five-minute CDN cache, which hid freshly
+// published addresses and made Refresh Endpoint useless.
+check('parses the GitHub contents API shape', (function () {
+  const file = '# a note\n\nhttps://api-form.trycloudflare.com/v1\n';
+  const body = JSON.stringify({ encoding: 'base64', content: Buffer.from(file).toString('base64') });
+  return endpoint.parse(body) === 'https://api-form.trycloudflare.com/v1';
+})());
+check('ignores a base64 blob with the wrong encoding field', endpoint.parse('{"encoding":"utf-8","content":"aHR0cHM6Ly94LmNvbQ=="}') === null);
+check('derives the raw mirror from an API url',
+  endpoint.rawFallbackFor('https://api.github.com/repos/H7Feez/elenchus_poc/contents/endpoint.txt') ===
+  'https://raw.githubusercontent.com/H7Feez/elenchus_poc/main/endpoint.txt');
+check('honours an explicit ref in the mirror',
+  endpoint.rawFallbackFor('https://api.github.com/repos/o/r/contents/f.txt?ref=dev') ===
+  'https://raw.githubusercontent.com/o/r/dev/f.txt');
+check('no mirror for a non-GitHub url', endpoint.rawFallbackFor('https://example.com/endpoint.txt') === null);
   check('empty file yields nothing', endpoint.parse('   \n # only a comment\n') === null);
   check('adds the /v1 suffix when missing', endpoint.normalise('https://d.example.com') === 'https://d.example.com/v1');
   check('keeps an existing /v1', endpoint.normalise('https://d.example.com/v1') === 'https://d.example.com/v1');

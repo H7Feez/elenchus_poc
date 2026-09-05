@@ -36,6 +36,14 @@ function parse(text) {
   if (body.startsWith('{')) {
     try {
       const obj = JSON.parse(body);
+      // GitHub's contents API wraps the file in JSON, base64-encoded. Reading
+      // it that way rather than through raw.githubusercontent.com matters:
+      // raw sits behind a five-minute CDN cache that a query string cannot
+      // defeat, so a freshly published address stayed invisible and Refresh
+      // Endpoint had nothing fresher to find.
+      if (obj && typeof obj.content === 'string' && obj.encoding === 'base64') {
+        return parse(Buffer.from(obj.content, 'base64').toString('utf8'));
+      }
       const url = obj && (obj.baseUrl || obj.base_url || obj.url);
       return typeof url === 'string' ? url.trim() : null;
     } catch (_e) {
@@ -70,29 +78,57 @@ async function resolve(discoveryUrl, log) {
   const fresh = cache.url && Date.now() - cache.at < CACHE_MS && cache.source === discoveryUrl;
   if (fresh) return cache.url;
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-  try {
-    const res = await fetch(discoveryUrl, {
-      signal: controller.signal,
-      headers: { 'Cache-Control': 'no-cache' }
-    });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const url = normalise(parse(await res.text()));
-    if (!url) throw new Error('no usable URL in the file');
-    cache = { url, at: Date.now(), source: discoveryUrl };
-    if (log) log('endpoint resolved to ' + url);
-    return url;
-  } catch (err) {
-    if (log) {
-      log('could not read the endpoint file (' +
-          (err && err.message ? err.message : err) + ')');
+  // The API is authoritative and uncached; raw is the fallback for when the
+  // API's unauthenticated rate limit is exhausted. Trying both means a rate
+  // limit costs freshness rather than the connection.
+  const attempts = [discoveryUrl];
+  const raw = rawFallbackFor(discoveryUrl);
+  if (raw) attempts.push(raw);
+
+  let lastError = null;
+  for (const attempt of attempts) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    try {
+      const res = await fetch(attempt, {
+        signal: controller.signal,
+        headers: { 'Cache-Control': 'no-cache', Accept: 'application/vnd.github.raw+json, text/plain, */*' }
+      });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const url = normalise(parse(await res.text()));
+      if (!url) throw new Error('no usable URL in the file');
+      cache = { url, at: Date.now(), source: discoveryUrl };
+      if (log) {
+        log('endpoint resolved to ' + url + (attempt === discoveryUrl ? '' : ' (via the cached mirror)'));
+      }
+      return url;
+    } catch (err) {
+      lastError = err;
+    } finally {
+      clearTimeout(timer);
     }
-    // A stale address beats none: the tunnel may still be up.
-    return cache.url;
-  } finally {
-    clearTimeout(timer);
   }
+
+  if (log) {
+    log('could not read the endpoint file (' +
+        (lastError && lastError.message ? lastError.message : lastError) + ')');
+  }
+  // A stale address beats none: the tunnel may still be up.
+  return cache.url;
 }
 
-module.exports = { resolve, invalidate, parse, normalise };
+/**
+ * The raw.githubusercontent mirror of a GitHub contents-API URL, or null.
+ * Used only when the API itself fails.
+ */
+function rawFallbackFor(url) {
+  const m = /^https:\/\/api\.github\.com\/repos\/([^/]+)\/([^/]+)\/contents\/(.+)$/.exec(String(url || ''));
+  if (!m) return null;
+  const [, owner, repo, rest] = m;
+  const path = rest.split('?')[0];
+  const refMatch = /[?&]ref=([^&]+)/.exec(rest);
+  const ref = refMatch ? refMatch[1] : 'main';
+  return `https://raw.githubusercontent.com/${owner}/${repo}/${ref}/${path}`;
+}
+
+module.exports = { resolve, invalidate, parse, normalise, rawFallbackFor };

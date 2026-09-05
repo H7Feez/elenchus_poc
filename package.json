@@ -2,7 +2,7 @@
   "name": "socratic-tutor-poc",
   "displayName": "Socratic Tutor (PoC)",
   "description": "A debugging tutor that answers with questions and hints instead of solutions.",
-  "version": "0.0.10",
+  "version": "0.0.11",
   "publisher": "sic-ai-capstone",
   "license": "MIT",
   "repository": {
@@ -93,8 +93,8 @@
         },
         "socraticTutor.endpointUrl": {
           "type": "string",
-          "default": "https://raw.githubusercontent.com/H7Feez/elenchus_poc/main/endpoint.txt",
-          "description": "Where the extension looks up the address of the team's model. Free tunnels hand out a new address each restart; publishing it here means nobody has to reconfigure anything. Only used by the 'local' provider when baseUrl is empty."
+          "default": "https://api.github.com/repos/H7Feez/elenchus_poc/contents/endpoint.txt",
+          "description": "Where the extension looks up the address of the team's model. Free tunnels hand out a new address each restart; publishing it here means nobody has to reconfigure anything. Uses GitHub's contents API rather than raw.githubusercontent.com, because raw sits behind a five-minute CDN cache that would hide a freshly published address. Only used by the 'local' provider when baseUrl is empty."
         },
         "socraticTutor.model": {
           "type": "string",

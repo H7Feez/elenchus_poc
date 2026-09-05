@@ -90,7 +90,8 @@ function activate(context) {
     vscode.commands.registerCommand('socraticTutor.clearApiKey', () => clearApiKey(context)),
     vscode.commands.registerCommand('socraticTutor.newSession', () => resetSession()),
     vscode.commands.registerCommand('socraticTutor.showStats', () => showStats()),
-    vscode.commands.registerCommand('socraticTutor.testConnection', () => testConnection(context))
+    vscode.commands.registerCommand('socraticTutor.testConnection', () => testConnection(context)),
+    vscode.commands.registerCommand('socraticTutor.switchBackend', () => switchBackend(context))
   );
 
   // "The highlights get removed as soon as the code is clicked."
@@ -329,6 +330,100 @@ const MODE_ICONS = {
   strong: 'search',
   direct: 'wrench'
 };
+
+// ---------------------------------------------------------------------------
+// Switching backends
+// ---------------------------------------------------------------------------
+
+/**
+ * The backends worth one click.
+ *
+ * Comparing the team's model against a hosted one is not a one-off — it is the
+ * evaluation. Doing it by hand-editing three settings invites collecting
+ * results under a configuration nobody can reconstruct afterwards, so each
+ * preset sets all three together.
+ *
+ * baseUrl is emptied deliberately on the local presets: left set, it pins the
+ * extension to one tunnel address and it silently stops following endpoint.txt.
+ */
+const BACKENDS = [
+  {
+    id: 'elenchus',
+    label: '$(mortar-board) Your model',
+    detail: "The team's fine-tuned Socratic tutor, wherever endpoint.txt currently points",
+    settings: { provider: 'local', baseUrl: '', model: 'elenchus' }
+  },
+  {
+    id: 'elenchus-base',
+    label: '$(circle-slash) Untrained base model',
+    detail: 'The same model with the training switched off — the before, for a before-and-after',
+    settings: { provider: 'local', baseUrl: '', model: 'elenchus-base' }
+  },
+  {
+    id: 'groq',
+    label: '$(cloud) Groq — Qwen 27B',
+    detail: 'A large hosted model, for comparison. Needs an API key.',
+    settings: {
+      provider: 'openaiCompatible',
+      baseUrl: 'https://api.groq.com/openai/v1',
+      model: 'qwen/qwen3.8-27b'
+    },
+    needsKey: true
+  },
+  {
+    id: 'mock',
+    label: '$(debug-disconnect) Mock — offline',
+    detail: 'Canned replies from a fixed script. No network, no key, no cost.',
+    settings: { provider: 'mock', baseUrl: '', model: '' }
+  }
+];
+
+function currentBackendId() {
+  const cfg = vscode.workspace.getConfiguration('socraticTutor');
+  const provider = cfg.get('provider');
+  const model = cfg.get('model');
+  const found = BACKENDS.find(
+    (b) => b.settings.provider === provider &&
+           (!b.settings.model || b.settings.model === model)
+  );
+  return found ? found.id : null;
+}
+
+async function switchBackend(context) {
+  const active = currentBackendId();
+
+  const picked = await vscode.window.showQuickPick(
+    BACKENDS.map((b) => ({
+      backend: b,
+      label: b.label,
+      description: b.id === active ? 'current' : undefined,
+      detail: b.detail
+    })),
+    { title: 'Which model should answer?', placeHolder: 'Pick a backend' }
+  );
+  if (!picked) return;
+
+  const b = picked.backend;
+  const cfg = vscode.workspace.getConfiguration('socraticTutor');
+  for (const [key, value] of Object.entries(b.settings)) {
+    await cfg.update(key, value, vscode.ConfigurationTarget.Global);
+  }
+
+  if (b.needsKey && !(await context.secrets.get(SECRET_KEY))) {
+    const pick = await vscode.window.showWarningMessage(
+      `Socratic Tutor: ${b.id} needs an API key, and none is stored.`,
+      'Set API Key'
+    );
+    if (pick === 'Set API Key') {
+      await setApiKey(context);
+    }
+  }
+
+  postModelLabel();
+  vscode.window.showInformationMessage(
+    'Socratic Tutor: now answering with ' + b.label.replace(/\$\([^)]*\)\s*/, '') + '.'
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Asking the model
@@ -897,4 +992,4 @@ function log(text) {
   channel().appendLine('[' + new Date().toISOString() + '] ' + text);
 }
 
-module.exports = { activate, deactivate, trimThread };
+module.exports = { activate, deactivate, trimThread, BACKENDS };

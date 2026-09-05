@@ -74,7 +74,27 @@ Module._resolveFilename = function (request, parent, isMain, options) {
   return realResolve.call(this, request, parent, isMain, options);
 };
 require.cache['vscode'] = { id: 'vscode', filename: 'vscode', loaded: true, exports: {} };
-const { trimThread } = require(path + 'extension.js');
+const { trimThread, BACKENDS } = require(path + 'extension.js');
+
+// --- backend presets ---
+// Each preset must set all three settings together: a half-applied switch is
+// how you end up with results collected under a configuration nobody can
+// reconstruct.
+check('four backends offered', BACKENDS.length === 4);
+check('every preset sets provider, baseUrl and model', BACKENDS.every(
+  (b) => 'provider' in b.settings && 'baseUrl' in b.settings && 'model' in b.settings));
+check('local presets clear baseUrl so they follow endpoint.txt', BACKENDS
+  .filter((b) => b.settings.provider === 'local')
+  .every((b) => b.settings.baseUrl === ''));
+check('the trained and untrained presets differ only by model', (function () {
+  const a = BACKENDS.find((b) => b.id === 'elenchus');
+  const z = BACKENDS.find((b) => b.id === 'elenchus-base');
+  return a && z && a.settings.provider === z.settings.provider &&
+         a.settings.model !== z.settings.model;
+})());
+check('only the hosted preset demands a key', BACKENDS
+  .filter((b) => b.needsKey).every((b) => b.settings.provider === 'openaiCompatible'));
+check('preset ids are unique', new Set(BACKENDS.map((b) => b.id)).size === BACKENDS.length);
 
 function fakeThread(n) {
   const t = [{ role: 'user', content: 'CODE' }];

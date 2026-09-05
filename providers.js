@@ -1,5 +1,7 @@
 'use strict';
 
+const endpoint = require('./endpoint');
+
 /**
  * Backend adapters.
  *
@@ -160,13 +162,42 @@ async function ollamaAdapter(messages, opts) {
 // local — the team's own fine-tuned model, served by model/serve.py
 // ---------------------------------------------------------------------------
 
+/**
+ * Order of preference:
+ *   1. an explicit socraticTutor.baseUrl, for anyone pointing it somewhere
+ *   2. whatever the discovery file currently advertises
+ *   3. localhost, for whoever is running the model themselves
+ *
+ * If the advertised address is stale the request fails as unreachable, so we
+ * re-read the file once and try again: tunnels change address, and a student
+ * should not have to know that.
+ */
 async function localAdapter(messages, opts) {
-  return openAiCompatibleAdapter(messages, {
-    ...opts,
-    baseUrl: opts.baseUrl || 'http://127.0.0.1:8008/v1',
-    model: opts.model || 'elenchus',
-    apiKey: undefined
-  });
+  const call = (baseUrl) =>
+    openAiCompatibleAdapter(messages, {
+      ...opts,
+      baseUrl,
+      model: opts.model || 'elenchus',
+      apiKey: undefined
+    });
+
+  if (opts.baseUrl) return call(opts.baseUrl);
+
+  const discovered = await endpoint.resolve(opts.endpointUrl, opts.log);
+  if (!discovered) return call('http://127.0.0.1:8008/v1');
+
+  try {
+    return await call(discovered);
+  } catch (err) {
+    if (!/Could not reach|did not answer within/.test(String(err && err.message))) {
+      throw err;
+    }
+    endpoint.invalidate();
+    const retry = await endpoint.resolve(opts.endpointUrl, opts.log);
+    if (!retry || retry === discovered) throw err;
+    if (opts.log) opts.log('address had changed; retrying at ' + retry);
+    return call(retry);
+  }
 }
 
 // ---------------------------------------------------------------------------

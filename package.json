@@ -61,7 +61,7 @@
       "properties": {
         "socraticTutor.provider": {
           "type": "string",
-          "default": "mock",
+          "default": "local",
           "enum": [
             "mock",
             "openaiCompatible",
@@ -79,11 +79,16 @@
         "socraticTutor.baseUrl": {
           "type": "string",
           "default": "",
-          "description": "Base URL of the model endpoint, e.g. https://api.groq.com/openai/v1 \u2014 used by the openaiCompatible provider."
+          "description": "Base URL of the model endpoint, e.g. https://api.groq.com/openai/v1. Leave empty with the 'local' provider to use whichever address the team's endpoint file currently advertises."
+        },
+        "socraticTutor.endpointUrl": {
+          "type": "string",
+          "default": "https://raw.githubusercontent.com/H7Feez/elenchus_poc/main/endpoint.txt",
+          "description": "Where the extension looks up the address of the team's model. Free tunnels hand out a new address each restart; publishing it here means nobody has to reconfigure anything. Only used by the 'local' provider when baseUrl is empty."
         },
         "socraticTutor.model": {
           "type": "string",
-          "default": "",
+          "default": "elenchus",
           "description": "Model identifier sent to the provider, e.g. qwen/qwen3.8-27b. Providers retire model ids often -- check the provider's current list if you get a 404."
         },
         "socraticTutor.defaultMode": {

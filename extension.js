@@ -373,10 +373,12 @@ async function run(context, req) {
   const opts = {
     provider,
     baseUrl: cfg.get('baseUrl'),
+    endpointUrl: cfg.get('endpointUrl'),
     model: cfg.get('model'),
     temperature: cfg.get('temperature'),
     mode: s.mode,
-    apiKey
+    apiKey,
+    log
   };
 
   post({ type: 'busy', value: true });
@@ -813,10 +815,12 @@ async function testConnection(context) {
   const opts = {
     provider,
     baseUrl: cfg.get('baseUrl'),
+    endpointUrl: cfg.get('endpointUrl'),
     model: cfg.get('model'),
     temperature: cfg.get('temperature'),
     mode: session.mode,
-    apiKey: await context.secrets.get(SECRET_KEY)
+    apiKey: await context.secrets.get(SECRET_KEY),
+    log
   };
 
   if (NEEDS_KEY.has(provider) && !opts.apiKey) {

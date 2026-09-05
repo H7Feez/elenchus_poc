@@ -259,11 +259,26 @@ check('first turn warns against assuming it runs', (function () {
   check('openaiCompatible demands a model', await providers
     .getReply([], { provider: 'openaiCompatible', baseUrl: 'https://example.invalid/v1' })
     .then(() => false, (e) => /socraticTutor\.model/.test(e.message)));
-  // The local provider needs no key and no settings; with nothing listening on
-  // its port it must fail with the reachability message, not a config one.
+  // With no discovery URL configured, the local provider falls back to
+  // localhost and fails as unreachable, not as a configuration error.
   check('local provider needs no key or settings', await providers
     .getReply([{ role: 'user', content: 'hi' }], { provider: 'local' })
     .then(() => false, (e) => /Could not reach http:\/\/127\.0\.0\.1:8008/.test(e.message)));
+
+  // --- endpoint discovery: reading the team's current address ---
+  const endpoint = require(path + 'endpoint.js');
+  check('parses a bare URL', endpoint.parse('https://a.trycloudflare.com/v1') === 'https://a.trycloudflare.com/v1');
+  check('ignores comments and blanks', endpoint.parse('# note\n\nhttps://b.example.com\n') === 'https://b.example.com');
+  check('parses JSON form', endpoint.parse('{"baseUrl": "https://c.example.com/v1"}') === 'https://c.example.com/v1');
+  check('empty file yields nothing', endpoint.parse('   \n # only a comment\n') === null);
+  check('adds the /v1 suffix when missing', endpoint.normalise('https://d.example.com') === 'https://d.example.com/v1');
+  check('keeps an existing /v1', endpoint.normalise('https://d.example.com/v1') === 'https://d.example.com/v1');
+  check('strips a trailing slash', endpoint.normalise('https://d.example.com/v1/') === 'https://d.example.com/v1');
+  check('rejects a non-URL', endpoint.normalise('not a url') === null);
+  check('rejects nothing', endpoint.normalise(null) === null);
+  // A dead discovery URL must not throw; it degrades to no address.
+  check('unreachable discovery file returns null', await endpoint
+    .resolve('https://no-such-host.invalid/endpoint.txt') === null);
   check('unreachable host gives a clear error', await providers
     .getReply([{ role: 'user', content: 'hi' }], {
       provider: 'openaiCompatible',

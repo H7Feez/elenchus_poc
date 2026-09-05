@@ -1,0 +1,10 @@
+# Where the team's model is running right now.
+#
+# The extension reads this file to find the tutor, so nobody has to configure
+# anything. When the tunnel restarts and hands out a new address, edit this
+# file on github.com and everyone picks it up within five minutes.
+#
+# One URL, on its own line. The /v1 suffix is optional.
+# Lines starting with # are ignored.
+#
+# Not running at the moment.

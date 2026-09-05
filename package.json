@@ -77,7 +77,7 @@
         "socraticTutor.model": {
           "type": "string",
           "default": "",
-          "description": "Model identifier sent to the provider, e.g. llama-3.3-70b-versatile."
+          "description": "Model identifier sent to the provider, e.g. qwen/qwen3.8-27b. Providers retire model ids often -- check the provider's current list if you get a 404."
         },
         "socraticTutor.defaultMode": {
           "type": "string",

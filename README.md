@@ -65,7 +65,7 @@ If you would rather not wait on CI, install Node.js once and build it yourself:
 
 ```powershell
 npx @vscode/vsce package
-code --install-extension socratic-tutor-poc-0.0.1.vsix
+code --install-extension socratic-tutor-poc-0.0.2.vsix
 ```
 
 ### About automatic updates
@@ -178,14 +178,23 @@ others. Switching between them is three settings, not a code change.
    |---|---|
    | `socraticTutor.provider` | `openaiCompatible` |
    | `socraticTutor.baseUrl` | `https://api.groq.com/openai/v1` |
-   | `socraticTutor.model` | `llama-3.3-70b-versatile` |
+   | `socraticTutor.model` | `qwen/qwen3.8-27b` |
 
 4. Run **Socratic Tutor: Test Connection**. It sends one throwaway message and
    reports the exact problem if there is one.
 
-For something lighter and faster, `llama-3.1-8b-instant` also works. Model ids
-rotate — if you get a 404, check the provider's current model list rather than
-trusting the table above.
+`openai/gpt-oss-120b` also works well. Both were tested against all three modes
+and produced correct `LINES:` markers and a correct fix; Qwen's replies were the
+more concise of the two, and being open-weight it stays compatible with any
+later fine-tuning.
+
+**Model ids rotate, and fast.** Groq retired the whole Llama family between this
+project starting and its second week. A 404 from *Test Connection* almost always
+means the id, not the key. To see what a provider currently offers:
+
+```powershell
+curl -H "Authorization: Bearer YOUR_KEY" https://api.groq.com/openai/v1/models
+```
 
 ### Other providers
 

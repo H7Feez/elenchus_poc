@@ -108,7 +108,7 @@ async function openAiCompatibleAdapter(messages, opts) {
   if (!opts.model) {
     throw new Error(
       'No model set. Put the model identifier in the setting socraticTutor.model, ' +
-      'e.g. llama-3.3-70b-versatile'
+      'e.g. qwen/qwen3.8-27b'
     );
   }
 

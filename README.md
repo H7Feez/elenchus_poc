@@ -46,8 +46,8 @@ Nobody needs Node.js locally for this: pushing a version tag makes GitHub
 Actions build the `.vsix` and attach it to the Release.
 
 ```powershell
-git tag v0.0.3
-git push origin v0.0.3
+git tag v0.0.4
+git push origin v0.0.4
 ```
 
 Download `socratic-tutor-poc.vsix` from the Release page, then either drag it
@@ -65,7 +65,7 @@ If you would rather not wait on CI, install Node.js once and build it yourself:
 
 ```powershell
 npx @vscode/vsce package
-code --install-extension socratic-tutor-poc-0.0.3.vsix
+code --install-extension socratic-tutor-poc-0.0.4.vsix
 ```
 
 ### About automatic updates
@@ -80,57 +80,74 @@ which loads the working copy directly and needs no install at all.
 
 ## Using it
 
-Open the panel, paste code into the first box and the error into the second,
-press the button, then answer the tutor's question in the reply box. `Enter`
-sends, `Shift+Enter` makes a new line. Both boxes start small and grow as you
-type, up to a ceiling, after which they scroll.
+1. **Select the code** you are stuck on in the editor.
+2. **Right-click** and choose **Ask Socratic Tutor**.
+3. A popup appears. Type a question if you have one, or leave it empty.
+4. **Pick a mode** with one of the three buttons, or press `Enter` to reuse the
+   last mode you chose. The prompt line names it.
+5. The side panel opens with the reply.
+
+There is no error box. The prompt tells the model it has not been told whether
+the code runs, and warns it not to assume — an earlier version asserted the code
+ran fine, and against code that plainly crashes the model spent its whole reply
+arguing with the premise instead of reading line 4.
 
 ### The three modes
 
-Pick one from the row at the top of the panel. It can be changed at any time,
-including part-way through a conversation — which is the realistic path: start
-on Hint, drop to Direct answer when genuinely stuck.
+| Mode | Button | What comes back | Guardrail |
+|---|---|---|---|
+| **Hint** | lightbulb | A question, nothing else. You locate the line yourself. | On |
+| **Strong hint** | magnifier | A question, plus the lines highlighted in the editor. | On |
+| **Direct answer** | wrench | The bug named, and a fix you can apply in one click. | Off |
 
-| Mode | What comes back | Guardrail |
-|---|---|---|
-| **Hint** | A question, nothing else. You locate the line yourself. | On |
-| **Strong hint** | A question, plus the offending lines highlighted in your code. | On |
-| **Direct answer** | The bug named plainly, and a fix you can apply to the editor in one click. | Off |
+Direct answer contradicts the project's own thesis on purpose: it gives the
+evaluation a control condition. Running one bug through all three modes is the
+clearest way to show what the Socratic constraint costs and buys.
 
-Direct answer is the mode that contradicts the project's own thesis, and it is
-here on purpose: it gives the evaluation a control condition. Running one bug
-through all three modes is the clearest way to show what the Socratic
-constraint actually costs and buys.
+### Highlighting in the editor
 
-The guardrail never runs in Direct answer mode — it would block the mode's
-entire reason for existing. It always runs in the other two, whatever
-`guardrailEnabled` says.
+Strong hint and Direct answer light up the offending lines in the editor itself.
+The highlight disappears the moment you click anywhere in that file, so it never
+sits there stale. **Re-highlight** in the panel puts it back.
 
-### Applying a fix
+Re-highlight refuses if the code has changed since you asked. The old line
+numbers would point at something else, and a confidently wrong highlight is
+worse than none.
 
-Direct answer replies carry a fix card. **Apply to editor** searches your open
-editors for the exact lines it means to replace and rewrites them in place;
-`Ctrl+Z` undoes it like any other edit. It refuses, and says why, when those
-lines are not open, or appear more than once in the file. **Copy** always
-works.
+The decoration is deliberately the least assertive thing it could be: a
+translucent background, no gutter mark, and none of the inline `before`/`after`
+content that inline suggestions use, so it cannot collide with Copilot's ghost
+text. VS Code exposes no priority setting for decorations — where two overlap,
+the type registered first paints underneath — so ours is created at activation,
+which is the only lever the API offers.
+
+### The panel
+
+The last 10 exchanges are kept; older ones drop off. Each shows the code you
+selected (collapsed automatically when it is long), your question if you added
+one, and the reply, each in its own block.
+
+Replies are revealed progressively rather than landing all at once. It is
+cosmetic, capped at about a second however long the reply is, and skipped
+entirely when the OS asks for reduced motion. Turn it off with
+`socraticTutor.typewriter`.
+
+The composer at the bottom continues the conversation about the same selection —
+without it, Hint mode would hand you a question you had no way to answer.
 
 ### Testing it offline
 
-To see the guardrail fire, type `/leak` as a reply — the mock backend will
-deliberately hand over a full solution, and the filter will intercept it.
-
-The mock backend is canned: it replies from a fixed script for each mode,
-regardless of what you paste. It is written for `samples/wrong_average.py`, so
-paste that one to see coherent replies. Against anything else it will be
-confidently irrelevant. Replies start responding to your real code once a model
-is connected.
+Type `/leak` as a reply to force a guardrail-tripping response from the mock
+backend. The mock replies from a fixed script per mode regardless of what you
+select; it is written for `samples/wrong_average.py`.
 
 ### Commands
 
 | Command | What it does |
 |---|---|
-| `Socratic Tutor: Open` | Opens the panel |
-| `Socratic Tutor: New Session` | Clears the conversation and stats |
+| `Ask Socratic Tutor` | The main one. Needs a selection; also on the editor right-click menu |
+| `Socratic Tutor: Open` | Opens the panel without asking anything |
+| `Socratic Tutor: New Session` | Clears the history, the highlight and the stats |
 | `Socratic Tutor: Show Session Stats` | Prints guardrail counts to the Output panel |
 | `Socratic Tutor: Set API Key` | Stores a provider key in the OS vault |
 | `Socratic Tutor: Clear API Key` | Removes it |

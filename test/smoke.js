@@ -136,16 +136,22 @@ check('pads numbers to equal width', (function () {
   const out = prompt.numberLines(new Array(12).join('x\n') + 'x').split('\n');
   return out[0] === ' 1 | x' && out[9] === '10 | x';
 })());
-check('first turn includes numbered code', prompt.buildFirstTurn('x = 1\n', 'IndexError: nope').indexOf('1 | x = 1') !== -1);
-check('first turn includes error', prompt.buildFirstTurn('x = 1', 'IndexError').indexOf('IndexError') !== -1);
-// An empty error box means the student did not paste an error, NOT that the
-// code runs. Asserting the latter hands the model a false premise, and it
-// will argue with the code instead of reading it.
-check('first turn does not claim the code runs', (function () {
-  const t = prompt.buildFirstTurn('x = 1', '');
-  return !/runs without an error/i.test(t) && /have not pasted an error/i.test(t);
+check('first turn includes numbered code', prompt.buildFirstTurn('x = 1\n', 'why?').indexOf('1 | x = 1') !== -1);
+check('first turn includes the question', prompt.buildFirstTurn('x = 1', 'why is this wrong?').indexOf('why is this wrong?') !== -1);
+check('first turn handles no question', /have not added a question/.test(prompt.buildFirstTurn('x = 1', '')));
+
+// There is no error field any more, so the prompt must never imply we know
+// whether the code runs. Asserting that hands the model a false premise and it
+// argues with the code instead of reading it.
+check('first turn never claims the code runs', (function () {
+  const withQ = prompt.buildFirstTurn('x = 1', 'why?');
+  const withoutQ = prompt.buildFirstTurn('x = 1', '');
+  return !/runs without an error/i.test(withQ) && !/runs without an error/i.test(withoutQ);
 })());
-check('first turn warns against assuming it runs', /Do not assume it runs cleanly/.test(prompt.buildFirstTurn('x = 1', '')));
+check('first turn warns against assuming it runs', (function () {
+  const t = prompt.buildFirstTurn('x = 1', 'why?');
+  return /Do not assume/.test(t) && /would fail/.test(t);
+})());
 
 // --- mock provider ---
 (async () => {

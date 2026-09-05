@@ -14,54 +14,29 @@
     <span id="model" class="model">—</span>
   </header>
 
-  <div id="modes" class="modes" role="radiogroup" aria-label="How much help to give"></div>
-  <p id="modeNote" class="mode-note"></p>
+  <div class="toolbar">
+    <button id="reHighlight" class="ghost" title="Put the highlight back in the editor">
+      Re-highlight
+    </button>
+    <button id="restart" class="ghost">Clear history</button>
+  </div>
 
-  <section id="setup">
-    <label for="code">Your code</label>
-    <textarea id="code" rows="2" spellcheck="false" data-autogrow data-max="420"
-              placeholder="Paste the code you are stuck on."></textarea>
+  <div id="empty" class="empty">
+    <p>Select some code in the editor, right-click, and choose
+       <strong>Ask Socratic Tutor</strong>.</p>
+    <p class="empty-note">The popup takes an optional question and three buttons
+       for how much help you want.</p>
+  </div>
 
-    <label for="error">Error or stack trace <span class="hint">optional</span></label>
-    <textarea id="error" rows="2" spellcheck="false" data-autogrow data-max="200"
-              placeholder="Paste the error. Leave empty if it runs but does the wrong thing."></textarea>
+  <main id="history" role="log" aria-live="polite" aria-label="Conversation"></main>
 
-    <button id="start" class="primary">Ask for help</button>
-  </section>
+  <div id="busy" class="busy" hidden>thinking…</div>
 
-  <section id="conversation" hidden>
-    <div id="codeView" class="codeview">
-      <div class="codeview-head">
-        <span class="codeview-title">Your code</span>
-        <button id="toggleCode" class="link" aria-expanded="true">Hide</button>
-      </div>
-      <div id="codeBody" class="codeview-body">
-        <ol id="codeLines" class="codelines"></ol>
-      </div>
-    </div>
-
-    <div id="transcript" role="log" aria-live="polite"></div>
-
-    <div id="busy" class="busy" hidden>thinking…</div>
-
-    <div id="fixCard" class="fixcard" hidden>
-      <span class="fixcard-label">Suggested fix — replaces <span id="fixRange">lines</span></span>
-      <pre id="fixCode"></pre>
-      <div class="fixcard-actions">
-        <button id="applyFix" class="primary">Apply to editor</button>
-        <button id="copyFix" class="ghost">Copy</button>
-      </div>
-    </div>
-
-    <div class="composer">
-      <textarea id="reply" rows="2" spellcheck="false" data-autogrow data-max="220"
-                placeholder="Answer the tutor's question. Enter to send, Shift+Enter for a new line."></textarea>
-      <div class="composer-row">
-        <button id="send" class="primary">Send</button>
-        <button id="restart" class="ghost">New session</button>
-      </div>
-    </div>
-  </section>
+  <div id="composer" class="composer" hidden>
+    <textarea id="reply" rows="2" spellcheck="false" data-autogrow data-max="200"
+              placeholder="Answer the tutor's question. Enter to send, Shift+Enter for a new line."></textarea>
+    <button id="send" class="primary">Send</button>
+  </div>
 
   <div id="notice" class="notice" hidden></div>
 

@@ -201,25 +201,29 @@ function numberLines(code) {
     .join('\n');
 }
 
-/** Wraps the pasted code and error into the first user turn. */
-function buildFirstTurn(code, errorText) {
+/**
+ * Wraps the selected code and the student's question into the first user turn.
+ *
+ * There is no error field any more. The panel never asks for one, so the prompt
+ * must never imply we know whether the code runs — an earlier version asserted
+ * "it runs without an error", and against code that plainly crashes the model
+ * spent its whole reply arguing with the premise instead of reading the code.
+ */
+function buildFirstTurn(code, context) {
   const parts = [];
-  parts.push('Here is my code:\n\n' + numberLines(code.replace(/\s+$/, '')));
-  if (errorText && errorText.trim()) {
-    parts.push('Here is the error I get:\n\n' + errorText.trim());
+  parts.push('Here is the code I selected:\n\n' + numberLines(code.replace(/\s+$/, '')));
+
+  if (context && context.trim()) {
+    parts.push('My question: ' + context.trim());
   } else {
-    // Never assert that the code runs. An empty error box means the student
-    // did not paste an error, which is not the same as there not being one.
-    // Stating it as fact hands the model a false premise, and it will spend
-    // the whole reply trying to reconcile that with code it can see crashes.
-    parts.push(
-      'I have not pasted an error message. That might be because the code runs ' +
-      'and gives the wrong answer, or because I did not copy the error down. ' +
-      'Do not assume it runs cleanly — if you can see that it would fail, treat ' +
-      'that as the problem and work from there.'
-    );
+    parts.push('I have not added a question. Find what is wrong with this code.');
   }
-  parts.push('Help me find the problem.');
+
+  parts.push(
+    'I have not told you whether it runs, or what error it gives. Do not assume ' +
+    'it runs cleanly — if you can see that it would fail, treat that as the problem.'
+  );
+
   return parts.join('\n\n');
 }
 

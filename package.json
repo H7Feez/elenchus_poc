@@ -2,7 +2,7 @@
   "name": "socratic-tutor-poc",
   "displayName": "Socratic Tutor (PoC)",
   "description": "A debugging tutor that answers with questions and hints instead of solutions.",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "publisher": "sic-ai-capstone",
   "license": "MIT",
   "repository": {
@@ -20,6 +20,11 @@
   "activationEvents": [],
   "contributes": {
     "commands": [
+      {
+        "command": "socraticTutor.askSelection",
+        "title": "Ask Socratic Tutor",
+        "category": "Socratic Tutor"
+      },
       {
         "command": "socraticTutor.open",
         "title": "Socratic Tutor: Open",
@@ -72,7 +77,7 @@
         "socraticTutor.baseUrl": {
           "type": "string",
           "default": "",
-          "description": "Base URL of the model endpoint, e.g. https://api.groq.com/openai/v1 — used by the openaiCompatible provider."
+          "description": "Base URL of the model endpoint, e.g. https://api.groq.com/openai/v1 \u2014 used by the openaiCompatible provider."
         },
         "socraticTutor.model": {
           "type": "string",
@@ -103,8 +108,22 @@
           "type": "boolean",
           "default": true,
           "description": "Block replies that contain a full solution and ask the model to rewrite them as a hint. Never applies in Direct answer mode, which exists to hand over the fix."
+        },
+        "socraticTutor.typewriter": {
+          "type": "boolean",
+          "default": true,
+          "description": "Reveal the tutor's reply progressively instead of all at once. Cosmetic only, capped at about a second, and ignored when the OS asks for reduced motion."
         }
       }
+    },
+    "menus": {
+      "editor/context": [
+        {
+          "command": "socraticTutor.askSelection",
+          "when": "editorHasSelection",
+          "group": "navigation@100"
+        }
+      ]
     }
   }
 }

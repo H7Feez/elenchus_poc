@@ -7,80 +7,35 @@
   var vscode = acquireVsCodeApi();
 
   var el = {
-    setup: document.getElementById('setup'),
-    conversation: document.getElementById('conversation'),
-    modes: document.getElementById('modes'),
-    modeNote: document.getElementById('modeNote'),
-    code: document.getElementById('code'),
-    error: document.getElementById('error'),
-    start: document.getElementById('start'),
-    codeView: document.getElementById('codeView'),
-    codeBody: document.getElementById('codeBody'),
-    codeLines: document.getElementById('codeLines'),
-    toggleCode: document.getElementById('toggleCode'),
-    transcript: document.getElementById('transcript'),
-    reply: document.getElementById('reply'),
-    send: document.getElementById('send'),
-    restart: document.getElementById('restart'),
+    history: document.getElementById('history'),
+    empty: document.getElementById('empty'),
     busy: document.getElementById('busy'),
     notice: document.getElementById('notice'),
     model: document.getElementById('model'),
-    fixCard: document.getElementById('fixCard'),
-    fixRange: document.getElementById('fixRange'),
-    fixCode: document.getElementById('fixCode'),
-    applyFix: document.getElementById('applyFix'),
-    copyFix: document.getElementById('copyFix')
+    composer: document.getElementById('composer'),
+    reply: document.getElementById('reply'),
+    send: document.getElementById('send'),
+    restart: document.getElementById('restart'),
+    reHighlight: document.getElementById('reHighlight')
   };
 
-  var submittedCode = '';
+  var typewriterEnabled = true;
+  var reducedMotion =
+    window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-  // --- auto-growing textareas -------------------------------------------
-  // Start at two rows and grow with the content up to a per-field ceiling,
-  // after which the field scrolls. Keeps the panel usable in a narrow column.
+  // --- auto-growing reply box -------------------------------------------
 
   function grow(area) {
-    var max = parseInt(area.getAttribute('data-max'), 10) || 300;
+    var max = parseInt(area.getAttribute('data-max'), 10) || 200;
     area.style.height = 'auto';
     var wanted = area.scrollHeight;
     area.style.height = Math.min(wanted, max) + 'px';
     area.style.overflowY = wanted > max ? 'auto' : 'hidden';
   }
-
-  function watchGrowth(area) {
-    grow(area);
-    area.addEventListener('input', function () { grow(area); });
-  }
-
-  Array.prototype.forEach.call(document.querySelectorAll('[data-autogrow]'), watchGrowth);
-
-  // --- modes ------------------------------------------------------------
-
-  function renderModes(modes, active) {
-    el.modes.replaceChildren();
-    modes.forEach(function (mode) {
-      var btn = document.createElement('button');
-      btn.className = 'mode' + (mode.id === active ? ' active' : '');
-      btn.type = 'button';
-      btn.setAttribute('role', 'radio');
-      btn.setAttribute('aria-checked', mode.id === active ? 'true' : 'false');
-      btn.dataset.mode = mode.id;
-      btn.dataset.note = mode.note;
-      btn.textContent = mode.label;
-      btn.addEventListener('click', function () {
-        vscode.postMessage({ type: 'setMode', mode: mode.id });
-      });
-      el.modes.appendChild(btn);
-      if (mode.id === active) el.modeNote.textContent = mode.note;
-    });
-    el.start.textContent = active === 'direct' ? 'Ask for the answer' : 'Ask for help';
-  }
+  grow(el.reply);
+  el.reply.addEventListener('input', function () { grow(el.reply); });
 
   // --- outgoing ---------------------------------------------------------
-
-  el.start.addEventListener('click', function () {
-    clearNotice();
-    vscode.postMessage({ type: 'ask', code: el.code.value, error: el.error.value });
-  });
 
   el.send.addEventListener('click', sendReply);
 
@@ -95,25 +50,9 @@
     vscode.postMessage({ type: 'newSession' });
   });
 
-  el.applyFix.addEventListener('click', function () {
+  el.reHighlight.addEventListener('click', function () {
     clearNotice();
-    vscode.postMessage({ type: 'applyFix' });
-  });
-
-  el.copyFix.addEventListener('click', function () {
-    var text = el.fixCode.textContent;
-    navigator.clipboard.writeText(text).then(function () {
-      flash(el.copyFix, 'Copied');
-    }, function () {
-      showNotice('Could not reach the clipboard. Select the fix and press Ctrl+C.');
-    });
-  });
-
-  el.toggleCode.addEventListener('click', function () {
-    var hidden = el.codeBody.hidden;
-    el.codeBody.hidden = !hidden;
-    el.toggleCode.textContent = hidden ? 'Hide' : 'Show';
-    el.toggleCode.setAttribute('aria-expanded', hidden ? 'true' : 'false');
+    vscode.postMessage({ type: 'reHighlight' });
   });
 
   function sendReply() {
@@ -122,7 +61,7 @@
     clearNotice();
     el.reply.value = '';
     grow(el.reply);
-    vscode.postMessage({ type: 'ask', message: text });
+    vscode.postMessage({ type: 'reply', text: text });
   }
 
   // --- incoming ---------------------------------------------------------
@@ -130,32 +69,30 @@
   window.addEventListener('message', function (event) {
     var msg = event.data;
     switch (msg.type) {
-      case 'modes':
-        renderModes(msg.modes, msg.active);
+      case 'init':
+        typewriterEnabled = msg.typewriter !== false;
+        el.history.replaceChildren();
+        (msg.history || []).forEach(function (entry) {
+          var node = renderEntry(entry);
+          if (entry.response !== null && entry.response !== undefined) {
+            fillResponse(node, entry, true); // already seen; no animation
+          }
+        });
+        refreshChrome();
         break;
-      case 'append':
-        append(msg.role, msg.text, msg.flag);
-        if (msg.range) highlight(msg.range);
-        showFix(msg.fix);
+      case 'entry':
+        renderEntry(msg.entry);
+        refreshChrome();
         break;
-      case 'sessionStarted':
-        submittedCode = msg.code;
-        renderCode(msg.code);
-        el.setup.hidden = true;
-        el.conversation.hidden = false;
-        el.reply.focus();
-        break;
-      case 'codeUpdated':
-        submittedCode = msg.code;
-        renderCode(msg.code);
-        break;
-      case 'fixApplied':
-        el.fixCard.hidden = true;
+      case 'resolve':
+        var node = document.getElementById(msg.id);
+        if (node) fillResponse(node, msg.entry, msg.instant === true);
+        refreshChrome();
         break;
       case 'busy':
         el.busy.hidden = !msg.value;
         el.send.disabled = msg.value;
-        el.start.disabled = msg.value;
+        if (msg.value) scrollToEnd();
         break;
       case 'notice':
         showNotice(msg.text);
@@ -163,8 +100,13 @@
       case 'model':
         el.model.textContent = msg.text;
         break;
-      case 'reset':
-        reset();
+      case 'highlightState':
+        el.reHighlight.disabled = msg.active === true;
+        break;
+      case 'fixApplied':
+        Array.prototype.forEach.call(document.querySelectorAll('.fixcard'), function (c) {
+          c.remove();
+        });
         break;
       default:
         break;
@@ -175,100 +117,190 @@
 
   // textContent everywhere, never innerHTML: model output is untrusted text and
   // this panel runs with scripts enabled.
-  function append(role, text, flag) {
-    var turn = document.createElement('div');
-    turn.className = 'turn ' + role;
 
-    var who = document.createElement('span');
-    who.className = 'who';
-    who.textContent = role === 'student' ? 'You' : 'Tutor';
-    turn.appendChild(who);
+  function renderEntry(entry) {
+    var article = document.createElement('article');
+    article.className = 'exchange';
+    article.id = entry.id;
 
-    var body = document.createElement('span');
-    body.textContent = text;
-    turn.appendChild(body);
+    // Header: which mode, and where in the file it came from.
+    var head = document.createElement('div');
+    head.className = 'exchange-head';
 
-    if (flag) {
-      var badge = document.createElement('span');
-      badge.className = 'flag ' + flag;
-      badge.textContent = flag === 'rewritten' ? 'guardrail: rewritten' : 'guardrail: blocked';
-      turn.appendChild(document.createElement('br'));
-      turn.appendChild(badge);
+    var badge = document.createElement('span');
+    badge.className = 'mode-badge ' + entry.mode;
+    badge.textContent = entry.modeLabel;
+    head.appendChild(badge);
+
+    if (entry.startLine) {
+      var where = document.createElement('span');
+      where.className = 'where';
+      var lines = entry.code ? entry.code.split('\n').length : 0;
+      where.textContent =
+        lines > 1
+          ? 'lines ' + entry.startLine + '–' + (entry.startLine + lines - 1)
+          : 'line ' + entry.startLine;
+      head.appendChild(where);
+    }
+    article.appendChild(head);
+
+    // The selected code, collapsible so a long selection cannot bury the reply.
+    if (entry.code) {
+      var details = document.createElement('details');
+      details.className = 'block code-block';
+      details.open = entry.code.split('\n').length <= 12;
+
+      var summary = document.createElement('summary');
+      summary.textContent = 'Selected code';
+      details.appendChild(summary);
+
+      var ol = document.createElement('ol');
+      ol.className = 'codelines';
+      ol.start = entry.startLine || 1;
+      entry.code.split('\n').forEach(function (line) {
+        var li = document.createElement('li');
+        li.textContent = line === '' ? ' ' : line;
+        ol.appendChild(li);
+      });
+      details.appendChild(ol);
+      article.appendChild(details);
     }
 
-    el.transcript.appendChild(turn);
-    turn.scrollIntoView({ block: 'end' });
+    if (entry.question) {
+      var q = document.createElement('div');
+      q.className = 'block question';
+      var qlabel = document.createElement('span');
+      qlabel.className = 'block-label';
+      qlabel.textContent = entry.code ? 'You asked' : 'You replied';
+      q.appendChild(qlabel);
+      var qtext = document.createElement('p');
+      qtext.textContent = entry.question;
+      q.appendChild(qtext);
+      article.appendChild(q);
+    }
+
+    var resp = document.createElement('div');
+    resp.className = 'block response pending';
+    var rlabel = document.createElement('span');
+    rlabel.className = 'block-label';
+    rlabel.textContent = 'Tutor';
+    resp.appendChild(rlabel);
+    var rtext = document.createElement('p');
+    rtext.className = 'response-text';
+    resp.appendChild(rtext);
+    article.appendChild(resp);
+
+    el.history.appendChild(article);
+    scrollToEnd();
+    return article;
   }
 
-  function renderCode(code) {
-    el.codeLines.replaceChildren();
-    code.split('\n').forEach(function (line) {
-      var li = document.createElement('li');
-      li.textContent = line === '' ? ' ' : line;
-      el.codeLines.appendChild(li);
+  function fillResponse(article, entry, instant) {
+    var resp = article.querySelector('.response');
+    var target = article.querySelector('.response-text');
+    resp.classList.remove('pending');
+    if (entry.flag === 'error') resp.classList.add('failed');
+
+    type(target, entry.response || '', instant, function () {
+      if (entry.flag && entry.flag !== 'error') {
+        var badge = document.createElement('span');
+        badge.className = 'flag ' + entry.flag;
+        badge.textContent =
+          entry.flag === 'rewritten' ? 'guardrail: rewritten' : 'guardrail: blocked';
+        resp.appendChild(badge);
+      }
+      if (entry.fix) renderFix(article, entry.fix);
+      scrollToEnd();
     });
   }
 
-  function highlight(range) {
-    var items = el.codeLines.children;
-    for (var i = 0; i < items.length; i++) {
-      items[i].classList.remove('marked');
-    }
-    var first = null;
-    for (var n = range.start; n <= range.end; n++) {
-      var li = items[n - 1];
-      if (!li) continue;
-      li.classList.add('marked');
-      if (!first) first = li;
-    }
-    if (first) {
-      if (el.codeBody.hidden) {
-        el.codeBody.hidden = false;
-        el.toggleCode.textContent = 'Hide';
-        el.toggleCode.setAttribute('aria-expanded', 'true');
-      }
-      first.scrollIntoView({ block: 'nearest' });
-    }
+  function renderFix(article, fix) {
+    var card = document.createElement('div');
+    card.className = 'fixcard';
+
+    var label = document.createElement('span');
+    label.className = 'block-label';
+    label.textContent =
+      fix.range.start === fix.range.end
+        ? 'Suggested fix — replaces line ' + fix.range.start + ' of the selection'
+        : 'Suggested fix — replaces lines ' +
+          fix.range.start + '–' + fix.range.end + ' of the selection';
+    card.appendChild(label);
+
+    var pre = document.createElement('pre');
+    pre.textContent = fix.code;
+    card.appendChild(pre);
+
+    var actions = document.createElement('div');
+    actions.className = 'fixcard-actions';
+
+    var apply = document.createElement('button');
+    apply.className = 'primary';
+    apply.textContent = 'Apply to editor';
+    apply.addEventListener('click', function () {
+      clearNotice();
+      vscode.postMessage({ type: 'applyFix' });
+    });
+    actions.appendChild(apply);
+
+    var copy = document.createElement('button');
+    copy.className = 'ghost';
+    copy.textContent = 'Copy';
+    copy.addEventListener('click', function () {
+      navigator.clipboard.writeText(fix.code).then(
+        function () {
+          copy.textContent = 'Copied';
+          setTimeout(function () { copy.textContent = 'Copy'; }, 1500);
+        },
+        function () { showNotice('Could not reach the clipboard. Select the fix and press Ctrl+C.'); }
+      );
+    });
+    actions.appendChild(copy);
+
+    card.appendChild(actions);
+    article.appendChild(card);
   }
 
-  function showFix(fix) {
-    if (!fix) {
-      el.fixCard.hidden = true;
+  /**
+   * Reveals the reply progressively so a wall of text does not land at once.
+   * Purely cosmetic — the whole string is already here, and it is capped at
+   * about a second regardless of length so it never becomes the slow part.
+   */
+  var typing = null;
+
+  function type(target, text, instant, done) {
+    if (typing) { clearInterval(typing); typing = null; }
+
+    if (instant || !typewriterEnabled || reducedMotion || text.length < 24) {
+      target.textContent = text;
+      if (done) done();
       return;
     }
-    var r = fix.range;
-    el.fixRange.textContent =
-      r.start === r.end ? 'line ' + r.start : 'lines ' + r.start + '–' + r.end;
-    el.fixCode.textContent = fix.code;
-    el.applyFix.disabled = false;
-    el.fixCard.hidden = false;
-    el.fixCard.scrollIntoView({ block: 'nearest' });
+
+    var ticks = 70;
+    var step = Math.max(2, Math.ceil(text.length / ticks));
+    var i = 0;
+    typing = setInterval(function () {
+      i += step;
+      target.textContent = text.slice(0, i);
+      scrollToEnd();
+      if (i >= text.length) {
+        clearInterval(typing);
+        typing = null;
+        target.textContent = text;
+        if (done) done();
+      }
+    }, 14);
   }
 
-  function flash(button, text) {
-    var original = button.textContent;
-    button.textContent = text;
-    setTimeout(function () { button.textContent = original; }, 1500);
+  function refreshChrome() {
+    var has = el.history.children.length > 0;
+    el.empty.hidden = has;
+    el.composer.hidden = !has;
   }
 
-  function reset() {
-    el.transcript.replaceChildren();
-    el.codeLines.replaceChildren();
-    el.code.value = '';
-    el.error.value = '';
-    el.reply.value = '';
-    [el.code, el.error, el.reply].forEach(grow);
-    el.setup.hidden = false;
-    el.conversation.hidden = true;
-    el.busy.hidden = true;
-    el.fixCard.hidden = true;
-    el.codeBody.hidden = false;
-    el.toggleCode.textContent = 'Hide';
-    el.start.disabled = false;
-    el.send.disabled = false;
-    submittedCode = '';
-    clearNotice();
-    el.code.focus();
+  function scrollToEnd() {
+    window.scrollTo(0, document.body.scrollHeight);
   }
 
   function showNotice(text) {

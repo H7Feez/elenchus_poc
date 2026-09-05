@@ -7,37 +7,65 @@ const path = require('path');
 const { getReply, NEEDS_KEY } = require('./providers');
 const promptLib = require('./prompt');
 const guardrail = require('./guardrail');
-const { parseReply, applyRange, sliceRange } = require('./parse');
+const { parseReply, sliceRange } = require('./parse');
 
 const SECRET_KEY = 'socraticTutor.apiKey';
+const HISTORY_LIMIT = 10;
 
-/** The single tutor panel, or null when closed. */
+/**
+ * The decoration used to point at lines in the editor.
+ *
+ * Created once at activation, on purpose. VS Code has no public priority knob
+ * for decorations; where two types overlap, the one created earlier paints
+ * underneath. Registering ours first is the only lever available, so we take it.
+ *
+ * The shape is deliberately minimal for the same reason: a translucent
+ * background and nothing else. No `before`/`after` content, which is the
+ * mechanism inline suggestions use, and no overview-ruler mark, so we never
+ * compete with anything else for the same pixels.
+ */
+let highlightType = null;
+
 let panel = null;
+let panelReady = false;
+const pendingPosts = [];
 
-/** Conversation state. Reset by socraticTutor.newSession. */
 let session = newSession();
 
 function newSession() {
   return {
-    started: false,          // has the student submitted code yet
     mode: promptLib.DEFAULT_MODE,
-    code: '',                // the submitted code, kept so fixes can be applied to it
-    messages: [],            // OpenAI-shape turns, excluding the system prompt
-    lastFix: null,           // { range, replacement } from the most recent direct answer
+    thread: [],       // model conversation for the current selection
+    history: [],      // display log, capped at HISTORY_LIMIT
+    anchor: null,     // { uri, range, text, code } — what we last highlighted
+    lastFix: null,
     stats: {
       asks: 0,
       byMode: { hint: 0, strong: 0, direct: 0 },
-      guardrailFired: 0,     // a reply was caught and a rewrite requested
-      guardrailBlocked: 0,   // the rewrite was ALSO bad, student saw nothing
+      guardrailFired: 0,
+      guardrailBlocked: 0,
       repliesWithoutQuestion: 0,
       fixesApplied: 0,
-      reasons: []            // every reason string the filter produced
+      reasons: []
     }
   };
 }
 
+// ---------------------------------------------------------------------------
+// Activation
+// ---------------------------------------------------------------------------
+
 function activate(context) {
+  highlightType = vscode.window.createTextEditorDecorationType({
+    backgroundColor: new vscode.ThemeColor('editor.findMatchHighlightBackground'),
+    // Do not grow or shrink when the student edits next to it. A stale
+    // highlight that has quietly swallowed new text is worse than none.
+    rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed
+  });
+  context.subscriptions.push(highlightType);
+
   context.subscriptions.push(
+    vscode.commands.registerCommand('socraticTutor.askSelection', () => askSelection(context)),
     vscode.commands.registerCommand('socraticTutor.open', () => openPanel(context)),
     vscode.commands.registerCommand('socraticTutor.setApiKey', () => setApiKey(context)),
     vscode.commands.registerCommand('socraticTutor.clearApiKey', () => clearApiKey(context)),
@@ -45,144 +73,222 @@ function activate(context) {
     vscode.commands.registerCommand('socraticTutor.showStats', () => showStats()),
     vscode.commands.registerCommand('socraticTutor.testConnection', () => testConnection(context))
   );
+
+  // "The highlights get removed as soon as the code is clicked."
+  context.subscriptions.push(
+    vscode.window.onDidChangeTextEditorSelection((e) => {
+      if (Date.now() < suppressClearUntil) return;
+      if (e.textEditor.document.uri.toString() === (session.anchor && session.anchor.uri)) {
+        clearHighlight();
+      }
+    })
+  );
 }
 
 function deactivate() {}
 
 // ---------------------------------------------------------------------------
-// Panel
+// Highlighting
 // ---------------------------------------------------------------------------
 
-function openPanel(context) {
-  if (panel) {
-    panel.reveal(vscode.ViewColumn.Beside);
+/**
+ * Applying a decoration can be followed by a selection event as focus returns
+ * to the editor, which would clear the highlight before it was ever seen.
+ */
+let suppressClearUntil = 0;
+
+function editorsFor(uriString) {
+  return vscode.window.visibleTextEditors.filter(
+    (e) => e.document.uri.toString() === uriString
+  );
+}
+
+function applyHighlight(uriString, range) {
+  const editors = editorsFor(uriString);
+  if (!editors.length) return false;
+  suppressClearUntil = Date.now() + 400;
+  editors.forEach((e) => {
+    e.setDecorations(highlightType, [range]);
+    e.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+  });
+  post({ type: 'highlightState', active: true });
+  return true;
+}
+
+function clearHighlight() {
+  vscode.window.visibleTextEditors.forEach((e) => e.setDecorations(highlightType, []));
+  post({ type: 'highlightState', active: false });
+}
+
+/**
+ * Puts the highlight back, but only if the code is still the code we asked
+ * about. If it has been edited the old range means nothing, and lighting up
+ * whatever now sits at those coordinates would be actively misleading.
+ */
+async function reHighlight() {
+  const a = session.anchor;
+  if (!a) {
+    post({ type: 'notice', text: 'Nothing has been highlighted yet.' });
     return;
   }
 
-  panel = vscode.window.createWebviewPanel(
-    'socraticTutor',
-    'Socratic Tutor',
-    vscode.ViewColumn.Beside,
-    {
-      enableScripts: true,
-      retainContextWhenHidden: true,
-      localResourceRoots: [vscode.Uri.file(path.join(context.extensionPath, 'media'))]
-    }
-  );
+  let doc;
+  try {
+    doc = await vscode.workspace.openTextDocument(vscode.Uri.parse(a.uri));
+  } catch (_e) {
+    post({ type: 'notice', text: 'That file is no longer open.' });
+    return;
+  }
+  await vscode.window.showTextDocument(doc, { preserveFocus: true, preview: false });
 
-  panel.webview.html = renderHtml(context, panel.webview);
+  if (doc.getText(a.range) === a.text) {
+    applyHighlight(a.uri, a.range);
+    return;
+  }
 
-  panel.onDidDispose(() => { panel = null; }, null, context.subscriptions);
+  // It may simply have moved. Accept that only when there is one candidate.
+  const whole = doc.getText();
+  const at = whole.indexOf(a.text);
+  if (at !== -1 && at === whole.lastIndexOf(a.text)) {
+    const moved = new vscode.Range(doc.positionAt(at), doc.positionAt(at + a.text.length));
+    session.anchor.range = moved;
+    applyHighlight(a.uri, moved);
+    return;
+  }
 
-  panel.webview.onDidReceiveMessage(
-    (msg) => handleMessage(context, msg),
-    null,
-    context.subscriptions
-  );
-}
-
-function renderHtml(context, webview) {
-  const mediaPath = (file) =>
-    webview.asWebviewUri(vscode.Uri.file(path.join(context.extensionPath, 'media', file)));
-
-  const html = fs.readFileSync(path.join(context.extensionPath, 'media', 'panel.html'), 'utf8');
-  const nonce = String(Math.random()).slice(2) + String(Date.now());
-
-  return html
-    .replace(/\{\{cspSource\}\}/g, webview.cspSource)
-    .replace(/\{\{nonce\}\}/g, nonce)
-    .replace(/\{\{styleUri\}\}/g, mediaPath('panel.css').toString())
-    .replace(/\{\{scriptUri\}\}/g, mediaPath('panel.js').toString());
-}
-
-function post(message) {
-  if (panel) panel.webview.postMessage(message);
-}
-
-function postModelLabel() {
-  const cfg = vscode.workspace.getConfiguration('socraticTutor');
-  const provider = cfg.get('provider');
-  const model = cfg.get('model');
   post({
-    type: 'model',
-    text: provider === 'mock' ? 'mock (offline)' : provider + (model ? ' · ' + model : '')
-  });
-}
-
-/** Sends the mode list and the current selection, so the panel never hardcodes them. */
-function postModes() {
-  post({
-    type: 'modes',
-    modes: Object.keys(promptLib.MODES).map((id) => ({
-      id,
-      label: promptLib.MODES[id].label,
-      note: promptLib.MODES[id].note
-    })),
-    active: session.mode
+    type: 'notice',
+    text: 'That code has changed since you asked, so the old highlight would point at the wrong thing.'
   });
 }
 
 // ---------------------------------------------------------------------------
-// Message handling
+// The selection flow
 // ---------------------------------------------------------------------------
 
-async function handleMessage(context, msg) {
-  switch (msg.type) {
-    case 'ready':
-      session.mode = promptLib.modeOrDefault(
-        vscode.workspace.getConfiguration('socraticTutor').get('defaultMode')
-      );
-      postModes();
-      postModelLabel();
-      break;
-    case 'setMode':
-      session.mode = promptLib.modeOrDefault(msg.mode);
-      postModes();
-      break;
-    case 'ask':
-      await ask(context, msg);
-      break;
-    case 'applyFix':
-      await applyFixToEditor();
-      break;
-    case 'newSession':
-      resetSession();
-      break;
-    default:
-      break;
+async function askSelection(context) {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) {
+    vscode.window.showWarningMessage('Socratic Tutor: open a file and select some code first.');
+    return;
   }
+  if (editor.selection.isEmpty) {
+    vscode.window.showWarningMessage('Socratic Tutor: select the code you are stuck on first.');
+    return;
+  }
+
+  const selection = new vscode.Range(editor.selection.start, editor.selection.end);
+  const code = editor.document.getText(selection);
+
+  const asked = await askForContext();
+  if (!asked) return; // dismissed
+
+  session.mode = asked.mode;
+  session.thread = [];
+  session.lastFix = null;
+  session.anchor = {
+    uri: editor.document.uri.toString(),
+    range: selection,
+    text: code,
+    code
+  };
+
+  openPanel(context);
+  await run(context, {
+    code,
+    context: asked.context,
+    firstTurn: true
+  });
 }
 
-async function ask(context, msg) {
+/**
+ * One popup: a text field for the question, and three buttons for the modes.
+ *
+ * VS Code has no widget that is literally a box with buttons inside it. This
+ * is the closest real thing — the QuickInput title-bar buttons — and it keeps
+ * the whole interaction to a single popup as intended. Enter submits with
+ * whichever mode was last used, which is named in the prompt line.
+ */
+function askForContext() {
+  return new Promise((resolve) => {
+    const input = vscode.window.createInputBox();
+
+    const buttons = Object.keys(promptLib.MODES).map((id) => ({
+      modeId: id,
+      iconPath: new vscode.ThemeIcon(MODE_ICONS[id]),
+      tooltip: promptLib.MODES[id].label + ' — ' + promptLib.MODES[id].note
+    }));
+
+    input.title = 'Ask Socratic Tutor';
+    input.placeholder = 'Add a question or context, or leave empty';
+    input.prompt =
+      'Enter uses ' + promptLib.MODES[session.mode].label + '. The buttons choose a mode.';
+    input.buttons = buttons;
+    input.ignoreFocusOut = true;
+
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+      input.hide();
+    };
+
+    input.onDidTriggerButton((b) => finish({ context: input.value.trim(), mode: b.modeId }));
+    input.onDidAccept(() => finish({ context: input.value.trim(), mode: session.mode }));
+    input.onDidHide(() => {
+      if (!settled) {
+        settled = true;
+        resolve(null);
+      }
+      input.dispose();
+    });
+
+    input.show();
+  });
+}
+
+const MODE_ICONS = {
+  hint: 'lightbulb',
+  strong: 'search',
+  direct: 'wrench'
+};
+
+// ---------------------------------------------------------------------------
+// Asking the model
+// ---------------------------------------------------------------------------
+
+async function run(context, req) {
   const cfg = vscode.workspace.getConfiguration('socraticTutor');
   const provider = cfg.get('provider');
 
-  // Build the student's turn. The first one carries the code and the error;
-  // every turn after that is a plain reply in the conversation.
-  let userText;
-  if (!session.started) {
-    if (!msg.code || !msg.code.trim()) {
-      post({ type: 'notice', text: 'Paste some code first.' });
-      return;
-    }
-    session.code = msg.code.replace(/\r\n?/g, '\n').replace(/\s+$/, '');
-    userText = promptLib.buildFirstTurn(session.code, msg.error);
-    session.started = true;
-    post({ type: 'sessionStarted', code: session.code });
-    post({ type: 'append', role: 'student', text: summariseFirstTurn(session.code, msg.error) });
-  } else {
-    if (!msg.message || !msg.message.trim()) return;
-    userText = msg.message.trim();
-    post({ type: 'append', role: 'student', text: userText });
-  }
+  const userText = req.firstTurn
+    ? promptLib.buildFirstTurn(req.code, req.context)
+    : req.context;
 
-  session.messages.push({ role: 'user', content: userText });
+  session.thread.push({ role: 'user', content: userText });
   session.stats.asks += 1;
   session.stats.byMode[session.mode] += 1;
 
+  const entry = {
+    id: 'e' + Date.now() + Math.random().toString(36).slice(2, 6),
+    mode: session.mode,
+    modeLabel: promptLib.MODES[session.mode].label,
+    code: req.firstTurn ? req.code : null,
+    startLine: req.firstTurn && session.anchor ? session.anchor.range.start.line + 1 : null,
+    question: req.context || '',
+    response: null,
+    flag: null,
+    fix: null
+  };
+  pushHistory(entry);
+  post({ type: 'entry', entry });
+
   const apiKey = await context.secrets.get(SECRET_KEY);
   if (NEEDS_KEY.has(provider) && !apiKey) {
-    post({ type: 'notice', text: 'No API key set. Run "Socratic Tutor: Set API Key".' });
+    entry.response = 'No API key set. Run "Socratic Tutor: Set API Key".';
+    entry.flag = 'error';
+    post({ type: 'resolve', id: entry.id, entry, instant: true });
     return;
   }
 
@@ -198,45 +304,57 @@ async function ask(context, msg) {
   post({ type: 'busy', value: true });
   try {
     const reply = await askWithGuardrail(opts);
-    session.messages.push({ role: 'assistant', content: reply.raw });
+    session.thread.push({ role: 'assistant', content: reply.raw });
 
-    // A fix only makes sense against code we can still address by line number.
-    session.lastFix =
-      reply.fix && reply.range ? { range: reply.range, replacement: reply.fix } : null;
+    entry.response = reply.text;
+    entry.flag = reply.flag;
 
-    post({
-      type: 'append',
-      role: 'tutor',
-      text: reply.text,
-      flag: reply.flag,
-      range: reply.range,
-      fix: session.lastFix ? { range: reply.range, code: reply.fix } : null
-    });
+    if (reply.fix && reply.range) {
+      session.lastFix = { range: reply.range, replacement: reply.fix };
+      entry.fix = { range: reply.range, code: reply.fix };
+    }
+
+    if (reply.range && session.anchor) {
+      highlightModelRange(reply.range);
+    }
+
+    post({ type: 'resolve', id: entry.id, entry });
   } catch (err) {
-    post({ type: 'notice', text: String(err && err.message ? err.message : err) });
+    entry.response = String(err && err.message ? err.message : err);
+    entry.flag = 'error';
+    post({ type: 'resolve', id: entry.id, entry, instant: true });
   } finally {
     post({ type: 'busy', value: false });
   }
 }
 
-/**
- * One model call, parsed and inspected.
- *
- * The guardrail sees only the prose. The LINES marker and the fix block are
- * structure, not the tutor talking, and running the filter over them would
- * make strong-hint and direct modes block themselves every single time.
- */
+/** Maps a 1-based line range inside the selection onto the document. */
+function modelRangeToDocument(range) {
+  const a = session.anchor;
+  if (!a) return null;
+  const base = a.range.start.line;
+  const startLine = base + range.start - 1;
+  const endLine = base + range.end - 1;
+  if (startLine < a.range.start.line || endLine > a.range.end.line) return null;
+  return new vscode.Range(startLine, 0, endLine, Number.MAX_SAFE_INTEGER);
+}
+
+function highlightModelRange(range) {
+  const docRange = modelRangeToDocument(range);
+  if (!docRange) return;
+  session.anchor.highlighted = docRange;
+  applyHighlight(session.anchor.uri, docRange);
+}
+
 async function askWithGuardrail(opts) {
   const cfg = vscode.workspace.getConfiguration('socraticTutor');
   const enabled = cfg.get('guardrailEnabled') && promptLib.guardrailApplies(session.mode);
 
   const base = [{ role: 'system', content: promptLib.buildSystemPrompt(session.mode) }]
-    .concat(session.messages);
+    .concat(session.thread);
 
   const first = await getReply(base, opts);
   const parsedFirst = parseReply(first);
-
-  // Hint mode never highlights, whatever the model chose to emit.
   const mayHighlight = promptLib.highlightApplies(session.mode);
 
   if (!enabled) {
@@ -256,7 +374,7 @@ async function askWithGuardrail(opts) {
       raw: first,
       text: parsedFirst.prose,
       range: mayHighlight ? parsedFirst.range : null,
-      fix: null, // a fix in a hint mode is exactly what we are here to prevent
+      fix: null,
       flag: null
     };
   }
@@ -268,14 +386,16 @@ async function askWithGuardrail(opts) {
   );
   log('guardrail fired (' + session.mode + '): ' + check.reasons.join('; '));
 
-  const retryMessages = base.concat([
-    { role: 'assistant', content: first },
-    { role: 'user', content: promptLib.REWRITE_INSTRUCTION }
-  ]);
-  const second = await getReply(retryMessages, opts);
+  const second = await getReply(
+    base.concat([
+      { role: 'assistant', content: first },
+      { role: 'user', content: promptLib.REWRITE_INSTRUCTION }
+    ]),
+    opts
+  );
   const parsedSecond = parseReply(second);
-
   const recheck = guardrail.inspect(parsedSecond.prose);
+
   if (!recheck.blocked) {
     return {
       raw: second,
@@ -301,14 +421,11 @@ async function askWithGuardrail(opts) {
   };
 }
 
-function summariseFirstTurn(code, errorText) {
-  const lines = code.trim().split('\n').length;
-  const plural = lines === 1 ? '' : 's';
-  const bits = ['Submitted ' + lines + ' line' + plural + ' of code'];
-  if (errorText && errorText.trim()) {
-    bits.push(errorText.trim().split('\n')[0]);
+function pushHistory(entry) {
+  session.history.push(entry);
+  while (session.history.length > HISTORY_LIMIT) {
+    session.history.shift();
   }
-  return bits.join(' — ');
 }
 
 // ---------------------------------------------------------------------------
@@ -316,100 +433,186 @@ function summariseFirstTurn(code, errorText) {
 // ---------------------------------------------------------------------------
 
 /**
- * Writes the suggested fix into the open editor.
- *
- * Deliberately conservative: it only edits when the original lines are found
- * verbatim, exactly once, in the active document. Anything less certain and it
- * refuses and explains, because silently rewriting the wrong part of a
- * student's file is far worse than making them paste it themselves.
+ * Much more certain than it used to be: we know the exact document and range
+ * the student selected, so the fix goes back where it came from. It still
+ * verifies the text has not changed underneath it first.
  */
 async function applyFixToEditor() {
   const fix = session.lastFix;
-  if (!fix) {
+  const a = session.anchor;
+  if (!fix || !a) {
     post({ type: 'notice', text: 'There is no fix to apply.' });
     return;
   }
 
-  const original = sliceRange(session.code, fix.range);
-  if (original === null) {
+  const expected = sliceRange(a.code, fix.range);
+  if (expected === null) {
+    post({ type: 'notice', text: 'The suggested lines fall outside the code you selected.' });
+    return;
+  }
+
+  const docRange = modelRangeToDocument(fix.range);
+  if (!docRange) {
+    post({ type: 'notice', text: 'The suggested lines fall outside the code you selected.' });
+    return;
+  }
+
+  let doc;
+  try {
+    doc = await vscode.workspace.openTextDocument(vscode.Uri.parse(a.uri));
+  } catch (_e) {
+    post({ type: 'notice', text: 'That file is no longer open.' });
+    return;
+  }
+
+  const clamped = doc.validateRange(docRange);
+  const current = doc.getText(clamped).replace(/\r\n?/g, '\n');
+  if (current.trim() !== expected.trim()) {
     post({
       type: 'notice',
-      text: 'The suggested lines are outside the code you submitted, so the fix was not applied. Copy it instead.'
+      text: 'Those lines have changed since you asked, so the fix was not applied. Use Copy instead.'
     });
     return;
   }
 
-  // The panel normalises everything to \n, but the file on disk is very likely
-  // CRLF on Windows. Searching for the \n form alone finds nothing, so try the
-  // document's own line endings too.
-  let editor = null;
-  let needle = null;
-  for (const candidate of vscode.window.visibleTextEditors) {
-    const crlf = candidate.document.eol === vscode.EndOfLine.CRLF;
-    const forms = crlf ? [original.replace(/\n/g, '\r\n'), original] : [original];
-    const found = forms.find((f) => candidate.document.getText().indexOf(f) !== -1);
-    if (found) {
-      editor = candidate;
-      needle = found;
-      break;
-    }
-  }
-
-  if (!editor) {
-    post({
-      type: 'notice',
-      text: 'Could not find those lines in any open editor. Open the file you pasted from, or use Copy.'
-    });
-    return;
-  }
-
-  const text = editor.document.getText();
-  const at = text.indexOf(needle);
-  if (at !== text.lastIndexOf(needle)) {
-    post({
-      type: 'notice',
-      text: 'Those lines appear more than once in the file, so it is not clear which to change. Use Copy and edit by hand.'
-    });
-    return;
-  }
-
-  // Write back in the document's own line endings, so the edit does not leave
-  // a block of mismatched newlines in the middle of the file.
-  const replacement =
-    editor.document.eol === vscode.EndOfLine.CRLF
-      ? fix.replacement.replace(/\r\n?/g, '\n').replace(/\n/g, '\r\n')
-      : fix.replacement;
-
-  const start = editor.document.positionAt(at);
-  const end = editor.document.positionAt(at + needle.length);
-  const target = new vscode.Range(start, end);
+  const crlf = doc.eol === vscode.EndOfLine.CRLF;
+  const replacement = crlf
+    ? fix.replacement.replace(/\r\n?/g, '\n').replace(/\n/g, '\r\n')
+    : fix.replacement;
 
   const edit = new vscode.WorkspaceEdit();
-  edit.replace(editor.document.uri, target, replacement);
+  edit.replace(doc.uri, clamped, replacement);
   const ok = await vscode.workspace.applyEdit(edit);
-
   if (!ok) {
     post({ type: 'notice', text: 'VS Code refused the edit. The file may be read-only.' });
     return;
   }
 
-  // Keep the panel's copy in step, so a second fix still counts lines correctly.
-  const updated = applyRange(session.code, fix.range, fix.replacement);
-  if (updated !== null) {
-    session.code = updated;
-    post({ type: 'codeUpdated', code: updated });
-  }
-
   session.stats.fixesApplied += 1;
   session.lastFix = null;
+  session.anchor = null; // the code we asked about no longer exists
+  clearHighlight();
   post({ type: 'fixApplied' });
-
-  const newEnd = editor.document.positionAt(
-    editor.document.offsetAt(start) + replacement.length
-  );
-  editor.revealRange(new vscode.Range(start, newEnd), vscode.TextEditorRevealType.InCenter);
-  editor.selection = new vscode.Selection(start, newEnd);
   vscode.window.showInformationMessage('Socratic Tutor: fix applied. Undo with Ctrl+Z.');
+}
+
+// ---------------------------------------------------------------------------
+// Panel
+// ---------------------------------------------------------------------------
+
+function openPanel(context) {
+  if (panel) {
+    panel.reveal(vscode.ViewColumn.Beside, true);
+    return;
+  }
+
+  panelReady = false;
+  panel = vscode.window.createWebviewPanel(
+    'socraticTutor',
+    'Socratic Tutor',
+    { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
+    {
+      enableScripts: true,
+      retainContextWhenHidden: true,
+      localResourceRoots: [vscode.Uri.file(path.join(context.extensionPath, 'media'))]
+    }
+  );
+
+  panel.webview.html = renderHtml(context, panel.webview);
+
+  panel.onDidDispose(
+    () => {
+      panel = null;
+      panelReady = false;
+      pendingPosts.length = 0;
+    },
+    null,
+    context.subscriptions
+  );
+
+  panel.webview.onDidReceiveMessage(
+    (msg) => handleMessage(context, msg),
+    null,
+    context.subscriptions
+  );
+}
+
+function renderHtml(context, webview) {
+  const mediaPath = (file) =>
+    webview.asWebviewUri(vscode.Uri.file(path.join(context.extensionPath, 'media', file)));
+
+  const html = fs.readFileSync(path.join(context.extensionPath, 'media', 'panel.html'), 'utf8');
+  const nonce = String(Math.random()).slice(2) + String(Date.now());
+
+  return html
+    .replace(/\{\{cspSource\}\}/g, webview.cspSource)
+    .replace(/\{\{nonce\}\}/g, nonce)
+    .replace(/\{\{styleUri\}\}/g, mediaPath('panel.css').toString())
+    .replace(/\{\{scriptUri\}\}/g, mediaPath('panel.js').toString());
+}
+
+/**
+ * The panel is now opened at the moment a question is asked, so the first few
+ * messages routinely arrive before the webview has finished loading. Queue
+ * until it says it is ready, or the opening exchange vanishes.
+ */
+function post(message) {
+  if (!panel) return;
+  if (!panelReady) {
+    pendingPosts.push(message);
+    return;
+  }
+  panel.webview.postMessage(message);
+}
+
+function flushPosts() {
+  while (pendingPosts.length) {
+    panel.webview.postMessage(pendingPosts.shift());
+  }
+}
+
+function postModelLabel() {
+  const cfg = vscode.workspace.getConfiguration('socraticTutor');
+  const provider = cfg.get('provider');
+  const model = cfg.get('model');
+  post({
+    type: 'model',
+    text: provider === 'mock' ? 'mock (offline)' : provider + (model ? ' · ' + model : '')
+  });
+}
+
+async function handleMessage(context, msg) {
+  switch (msg.type) {
+    case 'ready':
+      panelReady = true;
+      panel.webview.postMessage({
+        type: 'init',
+        history: session.history,
+        typewriter: vscode.workspace.getConfiguration('socraticTutor').get('typewriter'),
+        limit: HISTORY_LIMIT
+      });
+      flushPosts();
+      postModelLabel();
+      break;
+    case 'reply':
+      if (!session.anchor) {
+        post({ type: 'notice', text: 'Select some code and ask a question to start.' });
+        return;
+      }
+      await run(context, { context: msg.text, firstTurn: false });
+      break;
+    case 'reHighlight':
+      await reHighlight();
+      break;
+    case 'applyFix':
+      await applyFixToEditor();
+      break;
+    case 'newSession':
+      resetSession();
+      break;
+    default:
+      break;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -426,14 +629,11 @@ async function setApiKey(context) {
   if (value === undefined) return;
   await context.secrets.store(SECRET_KEY, value.trim());
 
-  // Storing a key does not switch the backend, and nothing on screen says so.
-  // Left alone, the panel keeps answering from the canned mock and the student
-  // reasonably concludes the key did not work.
   const cfg = vscode.workspace.getConfiguration('socraticTutor');
   if (cfg.get('provider') === 'mock') {
     const pick = await vscode.window.showWarningMessage(
       'Socratic Tutor: key saved, but the provider is still "mock", so replies stay offline and canned. ' +
-      'Set socraticTutor.provider, baseUrl and model to use it.',
+        'Set socraticTutor.provider, baseUrl and model to use it.',
       'Open Settings'
     );
     if (pick === 'Open Settings') {
@@ -450,13 +650,22 @@ async function clearApiKey(context) {
   vscode.window.showInformationMessage('Socratic Tutor: API key cleared.');
 }
 
-/**
- * Sends one throwaway message so a broken key, URL or model id surfaces here
- * instead of halfway through a demo.
- */
 async function testConnection(context) {
   const cfg = vscode.workspace.getConfiguration('socraticTutor');
   const provider = cfg.get('provider');
+
+  if (provider === 'mock') {
+    const pick = await vscode.window.showWarningMessage(
+      'Socratic Tutor: the provider is "mock", which answers offline from a canned script. ' +
+        'There is no connection to test.',
+      'Open Settings'
+    );
+    if (pick === 'Open Settings') {
+      vscode.commands.executeCommand('workbench.action.openSettings', 'socraticTutor');
+    }
+    return;
+  }
+
   const opts = {
     provider,
     baseUrl: cfg.get('baseUrl'),
@@ -466,20 +675,6 @@ async function testConnection(context) {
     apiKey: await context.secrets.get(SECRET_KEY)
   };
 
-  // Testing the mock backend proves nothing — it always answers. Saying so is
-  // more useful than a green tick that means the opposite of what it looks like.
-  if (provider === 'mock') {
-    const pick = await vscode.window.showWarningMessage(
-      'Socratic Tutor: the provider is "mock", which answers offline from a canned script. ' +
-      'There is no connection to test.',
-      'Open Settings'
-    );
-    if (pick === 'Open Settings') {
-      vscode.commands.executeCommand('workbench.action.openSettings', 'socraticTutor');
-    }
-    return;
-  }
-
   if (NEEDS_KEY.has(provider) && !opts.apiKey) {
     vscode.window.showWarningMessage(
       'Socratic Tutor: no API key stored. Run "Socratic Tutor: Set API Key" first.'
@@ -488,7 +683,10 @@ async function testConnection(context) {
   }
 
   await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: 'Socratic Tutor: testing connection…' },
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: 'Socratic Tutor: testing connection…'
+    },
     async () => {
       try {
         const reply = await getReply(
@@ -497,7 +695,7 @@ async function testConnection(context) {
         );
         log('connection test OK: ' + reply.replace(/\s+/g, ' ').slice(0, 120));
         vscode.window.showInformationMessage(
-          `Socratic Tutor: ${provider} answered — "${reply.replace(/\s+/g, ' ').slice(0, 60)}"`
+          'Socratic Tutor: ' + provider + ' answered — "' + reply.replace(/\s+/g, ' ').slice(0, 60) + '"'
         );
       } catch (err) {
         const message = String(err && err.message ? err.message : err);
@@ -512,10 +710,10 @@ async function testConnection(context) {
 
 function resetSession() {
   const keepMode = session.mode;
+  clearHighlight();
   session = newSession();
   session.mode = keepMode;
-  post({ type: 'reset' });
-  postModes();
+  post({ type: 'init', history: [], typewriter: vscode.workspace.getConfiguration('socraticTutor').get('typewriter'), limit: HISTORY_LIMIT });
   postModelLabel();
 }
 

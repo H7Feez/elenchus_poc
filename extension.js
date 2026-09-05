@@ -425,6 +425,23 @@ async function setApiKey(context) {
   });
   if (value === undefined) return;
   await context.secrets.store(SECRET_KEY, value.trim());
+
+  // Storing a key does not switch the backend, and nothing on screen says so.
+  // Left alone, the panel keeps answering from the canned mock and the student
+  // reasonably concludes the key did not work.
+  const cfg = vscode.workspace.getConfiguration('socraticTutor');
+  if (cfg.get('provider') === 'mock') {
+    const pick = await vscode.window.showWarningMessage(
+      'Socratic Tutor: key saved, but the provider is still "mock", so replies stay offline and canned. ' +
+      'Set socraticTutor.provider, baseUrl and model to use it.',
+      'Open Settings'
+    );
+    if (pick === 'Open Settings') {
+      vscode.commands.executeCommand('workbench.action.openSettings', 'socraticTutor');
+    }
+    return;
+  }
+
   vscode.window.showInformationMessage('Socratic Tutor: API key saved.');
 }
 
@@ -448,6 +465,20 @@ async function testConnection(context) {
     mode: session.mode,
     apiKey: await context.secrets.get(SECRET_KEY)
   };
+
+  // Testing the mock backend proves nothing — it always answers. Saying so is
+  // more useful than a green tick that means the opposite of what it looks like.
+  if (provider === 'mock') {
+    const pick = await vscode.window.showWarningMessage(
+      'Socratic Tutor: the provider is "mock", which answers offline from a canned script. ' +
+      'There is no connection to test.',
+      'Open Settings'
+    );
+    if (pick === 'Open Settings') {
+      vscode.commands.executeCommand('workbench.action.openSettings', 'socraticTutor');
+    }
+    return;
+  }
 
   if (NEEDS_KEY.has(provider) && !opts.apiKey) {
     vscode.window.showWarningMessage(

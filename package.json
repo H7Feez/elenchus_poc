@@ -2,7 +2,7 @@
   "name": "socratic-tutor-poc",
   "displayName": "Socratic Tutor (PoC)",
   "description": "A debugging tutor that answers with questions and hints instead of solutions.",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "publisher": "sic-ai-capstone",
   "license": "MIT",
   "repository": {

@@ -8,6 +8,7 @@ const { getReply, NEEDS_KEY, listLocalModels } = require('./providers');
 const promptLib = require('./prompt');
 const guardrail = require('./guardrail');
 const { parseReply, sliceRange, mineLines, fixProblems } = require('./parse');
+const endpointLib = require('./endpoint');
 
 const SECRET_KEY = 'socraticTutor.apiKey';
 const LAST_MODE_KEY = 'socraticTutor.lastMode';
@@ -93,7 +94,8 @@ function activate(context) {
     vscode.commands.registerCommand('socraticTutor.newSession', () => resetSession()),
     vscode.commands.registerCommand('socraticTutor.showStats', () => showStats()),
     vscode.commands.registerCommand('socraticTutor.testConnection', () => testConnection(context)),
-    vscode.commands.registerCommand('socraticTutor.switchBackend', () => switchBackend(context))
+    vscode.commands.registerCommand('socraticTutor.switchBackend', () => switchBackend(context)),
+    vscode.commands.registerCommand('socraticTutor.refreshEndpoint', () => refreshEndpoint())
   );
 
   // "The highlights get removed as soon as the code is clicked."
@@ -1065,6 +1067,47 @@ async function testConnection(context) {
       }
     }
   );
+}
+
+/**
+ * Re-reads the address file now, rather than waiting out the five-minute
+ * cache. For the moment just after the host restarts the tunnel and publishes
+ * a new address: nobody should have to reinstall, and nobody should have to
+ * wait either.
+ */
+async function refreshEndpoint() {
+  const cfg = vscode.workspace.getConfiguration('socraticTutor');
+
+  if (cfg.get('baseUrl')) {
+    const pick = await vscode.window.showWarningMessage(
+      'Socratic Tutor: socraticTutor.baseUrl is set, so the address file is ignored. ' +
+        'Clear it to follow the team endpoint.',
+      'Clear it'
+    );
+    if (pick === 'Clear it') {
+      await cfg.update('baseUrl', '', vscode.ConfigurationTarget.Global);
+    } else {
+      return;
+    }
+  }
+
+  endpointLib.invalidate();
+  const url = await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: 'Socratic Tutor: checking for a new address…' },
+    () => endpointLib.resolve(cfg.get('endpointUrl'), log)
+  );
+
+  if (!url) {
+    vscode.window.showErrorMessage(
+      'Socratic Tutor: could not read the address file. Check socraticTutor.endpointUrl, ' +
+        'or that the repository is reachable.',
+      'Show Log'
+    ).then((p) => { if (p === 'Show Log') channel().show(true); });
+    return;
+  }
+
+  postModelLabel();
+  vscode.window.showInformationMessage('Socratic Tutor: now pointing at ' + url);
 }
 
 function resetSession() {

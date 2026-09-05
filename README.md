@@ -46,8 +46,8 @@ Nobody needs Node.js locally for this: pushing a version tag makes GitHub
 Actions build the `.vsix` and attach it to the Release.
 
 ```powershell
-git tag v0.0.8
-git push origin v0.0.8
+git tag v0.0.9
+git push origin v0.0.9
 ```
 
 Download `socratic-tutor-poc.vsix` from the Release page, then either drag it
@@ -65,7 +65,7 @@ If you would rather not wait on CI, install Node.js once and build it yourself:
 
 ```powershell
 npx @vscode/vsce package
-code --install-extension socratic-tutor-poc-0.0.8.vsix
+code --install-extension socratic-tutor-poc-0.0.9.vsix
 ```
 
 ### About automatic updates
@@ -159,6 +159,22 @@ Re-highlight refuses if the code has changed since you asked. The old line
 numbers would point at something else, and a confidently wrong highlight is
 worse than none.
 
+### When the address changes
+
+The model is served through a tunnel, and tunnels hand out a new address every
+time they restart. **This never requires reinstalling the extension.** The
+address lives in `endpoint.txt` in this repo, and the extension re-reads it
+every five minutes.
+
+If you host from the Colab notebook and give it a GitHub token (Colab Secrets,
+named `GITHUB_TOKEN`, with Contents: write on this repo), it updates
+`endpoint.txt` itself and there is nothing to do at all. Without a token it
+prints the address for you to paste.
+
+Either way, **Socratic Tutor: Refresh Endpoint** picks up a new address
+immediately rather than waiting out the cache. Reinstalling is only ever needed
+for a new version of the extension itself.
+
 The decoration is deliberately the least assertive thing it could be: a
 translucent background, no gutter mark, and none of the inline `before`/`after`
 content that inline suggestions use, so it cannot collide with Copilot's ghost
@@ -210,6 +226,7 @@ select; it is written for `samples/wrong_average.py`.
 | `Socratic Tutor: Open` | Opens the panel without asking anything |
 | `Socratic Tutor: New Session` | Clears the history, the highlight and the stats |
 | `Socratic Tutor: Show Session Stats` | Prints guardrail counts to the Output panel |
+| `Socratic Tutor: Refresh Endpoint` | Re-read the address file now, after the host restarted the tunnel |
 | `Socratic Tutor: Switch Model` | One click between your model, the untrained base, Groq, and mock |
 | `Socratic Tutor: Set API Key` | Stores a provider key in the OS vault |
 | `Socratic Tutor: Clear API Key` | Removes it |

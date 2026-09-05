@@ -2,7 +2,7 @@
   "name": "socratic-tutor-poc",
   "displayName": "Socratic Tutor (PoC)",
   "description": "A debugging tutor that answers with questions and hints instead of solutions.",
-  "version": "0.0.8",
+  "version": "0.0.9",
   "publisher": "sic-ai-capstone",
   "license": "MIT",
   "repository": {
@@ -28,6 +28,11 @@
       {
         "command": "socraticTutor.switchBackend",
         "title": "Socratic Tutor: Switch Model",
+        "category": "Socratic Tutor"
+      },
+      {
+        "command": "socraticTutor.refreshEndpoint",
+        "title": "Socratic Tutor: Refresh Endpoint",
         "category": "Socratic Tutor"
       },
       {

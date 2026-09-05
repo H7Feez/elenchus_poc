@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; style-src {{cspSource}}; script-src 'nonce-{{nonce}}';">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link href="{{styleUri}}" rel="stylesheet">
+  <title>Socratic Tutor</title>
+</head>
+<body>
+  <header>
+    <h1>Socratic Tutor</h1>
+    <span id="model" class="model">—</span>
+  </header>
+
+  <section id="setup">
+    <label for="code">Your code</label>
+    <textarea id="code" rows="14" spellcheck="false"
+              placeholder="Paste the code you are stuck on."></textarea>
+
+    <label for="error">Error or stack trace <span class="hint">optional</span></label>
+    <textarea id="error" rows="4" spellcheck="false"
+              placeholder="Paste the error. Leave empty if it runs but does the wrong thing."></textarea>
+
+    <button id="start" class="primary">Ask for a hint</button>
+  </section>
+
+  <section id="conversation" hidden>
+    <div id="transcript" role="log" aria-live="polite"></div>
+
+    <div id="busy" class="busy" hidden>thinking…</div>
+
+    <div class="composer">
+      <textarea id="reply" rows="3" spellcheck="false"
+                placeholder="Answer the tutor's question. Enter to send, Shift+Enter for a new line."></textarea>
+      <div class="composer-row">
+        <button id="send" class="primary">Send</button>
+        <button id="restart" class="ghost">New session</button>
+      </div>
+    </div>
+  </section>
+
+  <div id="notice" class="notice" hidden></div>
+
+  <script nonce="{{nonce}}" src="{{scriptUri}}"></script>
+</body>
+</html>

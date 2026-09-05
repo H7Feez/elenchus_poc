@@ -1,0 +1,42 @@
+name: Package extension
+
+# Builds a .vsix so teammates who would rather not clone into their extensions
+# folder can install a file instead. Runs on any version tag, and on demand
+# from the Actions tab.
+#
+# Nobody needs Node.js locally for this — GitHub's runner supplies it.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build the .vsix
+        run: npx --yes @vscode/vsce package --allow-missing-repository --out socratic-tutor-poc.vsix
+
+      # Downloadable from the run's summary page, tagged or not.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: socratic-tutor-poc-vsix
+          path: socratic-tutor-poc.vsix
+
+      # On a tag, also attach it to the GitHub Release so there is a stable link.
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: socratic-tutor-poc.vsix

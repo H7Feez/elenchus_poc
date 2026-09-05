@@ -1,0 +1,92 @@
+{
+  "name": "socratic-tutor-poc",
+  "displayName": "Socratic Tutor (PoC)",
+  "description": "A debugging tutor that answers with questions and hints instead of solutions.",
+  "version": "0.0.1",
+  "publisher": "sic-ai-capstone",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Education",
+    "Other"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "commands": [
+      {
+        "command": "socraticTutor.open",
+        "title": "Socratic Tutor: Open",
+        "category": "Socratic Tutor"
+      },
+      {
+        "command": "socraticTutor.setApiKey",
+        "title": "Socratic Tutor: Set API Key",
+        "category": "Socratic Tutor"
+      },
+      {
+        "command": "socraticTutor.clearApiKey",
+        "title": "Socratic Tutor: Clear API Key",
+        "category": "Socratic Tutor"
+      },
+      {
+        "command": "socraticTutor.newSession",
+        "title": "Socratic Tutor: New Session",
+        "category": "Socratic Tutor"
+      },
+      {
+        "command": "socraticTutor.showStats",
+        "title": "Socratic Tutor: Show Session Stats",
+        "category": "Socratic Tutor"
+      },
+      {
+        "command": "socraticTutor.testConnection",
+        "title": "Socratic Tutor: Test Connection",
+        "category": "Socratic Tutor"
+      }
+    ],
+    "configuration": {
+      "title": "Socratic Tutor",
+      "properties": {
+        "socraticTutor.provider": {
+          "type": "string",
+          "default": "mock",
+          "enum": [
+            "mock",
+            "openaiCompatible",
+            "ollama"
+          ],
+          "enumDescriptions": [
+            "Canned offline replies. No API key, no network. Use this to work on the UI and the guardrail.",
+            "Any OpenAI-compatible /chat/completions endpoint (Groq, Together, OpenRouter, vLLM, ...). Needs baseUrl, model and an API key.",
+            "Local Ollama server on http://localhost:11434/v1. Needs model, no API key."
+          ],
+          "description": "Which backend answers the student."
+        },
+        "socraticTutor.baseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Base URL of the model endpoint, e.g. https://api.groq.com/openai/v1 — used by the openaiCompatible provider."
+        },
+        "socraticTutor.model": {
+          "type": "string",
+          "default": "",
+          "description": "Model identifier sent to the provider, e.g. llama-3.3-70b-versatile."
+        },
+        "socraticTutor.temperature": {
+          "type": "number",
+          "default": 0.6,
+          "description": "Sampling temperature. Lower means the tutor sticks more closely to the system prompt."
+        },
+        "socraticTutor.guardrailEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Block replies that contain a full solution and ask the model to rewrite them as a hint."
+        }
+      }
+    }
+  }
+}

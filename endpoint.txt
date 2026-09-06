@@ -11,4 +11,4 @@
 # One URL, on its own line. The /v1 suffix is optional.
 # Lines starting with # are ignored.
 
-https://supplied-eat-advancement-usr.trycloudflare.com/v1
+https://info-faqs-hugh-optimize.trycloudflare.com/v1
